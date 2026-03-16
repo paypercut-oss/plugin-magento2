@@ -1,0 +1,88 @@
+<div class="payment-method" data-bind="css: {'_active': (getCode() == isChecked())}">
+    <div class="payment-method-title field choice">
+        <input type="radio"
+               name="payment[method]"
+               class="radio"
+               style="display: none;"
+               data-bind="attr: {'id': getCode()}, value: getCode(), checked: isChecked, click: selectPaymentMethod, visible: isRadioButtonVisible()"/>
+        <label class="label" data-bind="attr: {'for': getCode()}">
+            <span data-bind="text: getTitle()"></span>
+            <span class="bnpl-badge">BNPL</span>
+        </label>
+    </div>
+
+    <div class="payment-method-content">
+        <!-- ko foreach: getRegion('messages') -->
+        <!-- ko template: getTemplate() --><!-- /ko -->
+        <!--/ko-->
+
+        <div class="bnpl-description">
+            <p data-bind="text: getBnplDescription()"></p>
+        </div>
+
+        <!-- ko if: showInstallmentPreview() -->
+        <!-- Installment Options -->
+        <div class="bnpl-installments">
+            <label class="label">
+                <span data-bind="i18n: 'Choose the number of installments'"></span>
+            </label>
+            <div class="installment-options">
+                <!-- ko foreach: getInstallmentOptions() -->
+                <div class="installment-option"
+                     data-bind="css: {'selected': $parent.selectedInstallments() === months},
+                                click: function() { $parent.selectInstallment($data); }">
+                    <div class="option-radio">
+                        <input type="radio"
+                               name="bnpl_installments"
+                               data-bind="attr: {'id': 'installment_' + months, 'value': months},
+                                          checked: $parent.selectedInstallments"/>
+                    </div>
+                    <div class="option-details">
+                        <span class="months" data-bind="text: months + ' ' + $t('installments')"></span>
+                        <span class="amount" data-bind="text: monthlyAmount + '/' + $t('month')"></span>
+                    </div>
+                </div>
+                <!-- /ko -->
+            </div>
+        </div>
+
+        <!-- Selected Plan Summary -->
+        <div class="bnpl-summary" data-bind="visible: selectedInstallments()">
+            <p>
+                <span data-bind="i18n: 'You will pay:'"></span>
+                <strong data-bind="text: getSelectedMonthlyAmount()"></strong>
+                <span data-bind="i18n: 'per month'"></span>
+            </p>
+        </div>
+        <!-- /ko -->
+
+        <div class="payment-method-billing-address">
+            <!-- ko foreach: $parent.getRegion(getBillingAddressFormName()) -->
+            <!-- ko template: getTemplate() --><!-- /ko -->
+            <!--/ko-->
+        </div>
+
+        <div class="checkout-agreements-block">
+            <!-- ko foreach: $parent.getRegion('before-place-order') -->
+            <!-- ko template: getTemplate() --><!-- /ko -->
+            <!--/ko-->
+        </div>
+
+        <div class="actions-toolbar">
+            <div class="primary">
+                <button class="action primary checkout"
+                        type="submit"
+                        data-bind="
+                        click: placeOrder,
+                        attr: {title: $t('Pay in installments')},
+                        css: {disabled: !isPlaceOrderActionAllowed()},
+                        enable: (getCode() == isChecked())
+                        "
+                        disabled>
+                    <span data-bind="i18n: 'Pay in installments'"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+

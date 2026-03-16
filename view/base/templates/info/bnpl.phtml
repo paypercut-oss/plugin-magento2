@@ -1,0 +1,62 @@
+<?php
+/**
+ * BNPL Payment Info template
+ * Renders in admin order view and frontend order detail
+ *
+ * @var \Paypercut\Payment\Block\BnplInfo $block
+ */
+?>
+<table class="data-table" id="paypercut-bnpl-info">
+    <tr>
+        <td><?= $block->escapeHtml(__('Payment Method:')) ?></td>
+        <td><strong><?= $block->escapeHtml($block->getMethod()->getTitle()) ?></strong></td>
+    </tr>
+    <?php if ($block->getBnplStatus()): ?>
+    <tr>
+        <td><?= $block->escapeHtml(__('BNPL Status:')) ?></td>
+        <td><strong><?= $block->escapeHtml($block->getBnplStatusLabel()) ?></strong></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($block->getAttemptId()): ?>
+    <tr>
+        <td><?= $block->escapeHtml(__('Attempt ID:')) ?></td>
+        <td><?= $block->escapeHtml($block->getAttemptId()) ?></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($block->getProviderName()): ?>
+    <tr>
+        <td><?= $block->escapeHtml(__('BNPL Provider:')) ?></td>
+        <td><?= $block->escapeHtml($block->getProviderName()) ?></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($block->getPurchaseId()): ?>
+    <tr>
+        <td><?= $block->escapeHtml(__('Purchase ID:')) ?></td>
+        <td><?= $block->escapeHtml($block->getPurchaseId()) ?></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($block->getProviderPurchaseRef()): ?>
+    <tr>
+        <td><?= $block->escapeHtml(__('Provider Reference:')) ?></td>
+        <td><?= $block->escapeHtml($block->getProviderPurchaseRef()) ?></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($block->getInstallments()): ?>
+    <tr>
+        <td><?= $block->escapeHtml(__('Installments:')) ?></td>
+        <td><?= $block->escapeHtml($block->getInstallments()) ?> <?= $block->escapeHtml(__('months')) ?></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($block->getMonthlyAmount()): ?>
+    <tr>
+        <td><?= $block->escapeHtml(__('Monthly Payment:')) ?></td>
+        <td><?= $block->escapeHtml($block->getMonthlyAmount()) ?></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($block->getStatusReason()): ?>
+    <tr>
+        <td><?= $block->escapeHtml(__('Status Reason:')) ?></td>
+        <td><?= $block->escapeHtml($block->getStatusReason()) ?></td>
+    </tr>
+    <?php endif; ?>
+</table>

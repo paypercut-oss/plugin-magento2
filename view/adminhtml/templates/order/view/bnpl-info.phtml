@@ -1,0 +1,127 @@
+<?php
+
+use Magento\Framework\Exception\LocalizedException;
+use Magento\Sales\Block\Adminhtml\Order\AbstractOrder as AbstractOrderBlock;
+
+/**
+ * @var AbstractOrderBlock $block
+ */
+
+try {
+    $order = $block->getOrder();
+} catch (LocalizedException $e) {
+    return;
+}
+
+$payment = $order->getPayment();
+
+// Only display for BNPL payment method
+if (!$payment || $payment->getMethod() !== 'paypercut_bnpl') {
+    return;
+}
+
+$attemptId = $payment->getAdditionalInformation('paypercut_id');
+$bnplStatus = $payment->getAdditionalInformation('bnpl_status');
+$providerName = $payment->getAdditionalInformation('bnpl_provider_name');
+$purchaseId = $payment->getAdditionalInformation('bnpl_purchase_id');
+$providerRef = $payment->getAdditionalInformation('bnpl_provider_purchase_ref');
+$merchantRef = $payment->getAdditionalInformation('bnpl_merchant_purchase_ref');
+$statusReason = $payment->getAdditionalInformation('bnpl_status_reason');
+$installments = $payment->getAdditionalInformation('installments');
+$monthlyAmount = $payment->getAdditionalInformation('monthly_amount');
+
+// Map status to label and color
+$statusLabel = __('Awaiting confirmation');
+$statusStyle = 'color: #f89406; font-weight: bold;';
+
+if ($bnplStatus) {
+    switch ($bnplStatus) {
+        case 'ATTEMPT_STATUS_COMPLETED':
+            $statusLabel = __('Completed');
+            $statusStyle = 'color: #009a00; font-weight: bold;';
+            break;
+        case 'ATTEMPT_STATUS_DECLINED':
+            $statusLabel = __('Declined');
+            $statusStyle = 'color: #9a0000; font-weight: bold;';
+            break;
+        case 'ATTEMPT_STATUS_ERRORED':
+            $statusLabel = __('Errored');
+            $statusStyle = 'color: #9a0000; font-weight: bold;';
+            break;
+        case 'ATTEMPT_STATUS_CREATED':
+            $statusLabel = __('Created');
+            $statusStyle = 'color: #f89406; font-weight: bold;';
+            break;
+        case 'ATTEMPT_STATUS_INITIALIZED':
+            $statusLabel = __('Initialized (customer redirected)');
+            $statusStyle = 'color: #f89406; font-weight: bold;';
+            break;
+        case 'ATTEMPT_STATUS_IN_PROGRESS':
+            $statusLabel = __('In Progress');
+            $statusStyle = 'color: #f89406; font-weight: bold;';
+            break;
+        default:
+            $statusLabel = $bnplStatus;
+            $statusStyle = 'color: #666; font-weight: bold;';
+            break;
+    }
+}
+?>
+
+<tr>
+    <th><?= $block->escapeHtml(__('BNPL - Purchase Status')) ?></th>
+    <td>
+        <span style="<?= /* @noEscape */ $statusStyle ?>">
+            <?= $block->escapeHtml($statusLabel) ?>
+        </span>
+    </td>
+</tr>
+
+<?php if ($attemptId): ?>
+<tr>
+    <th><?= $block->escapeHtml(__('BNPL - Attempt ID')) ?></th>
+    <td><strong><?= $block->escapeHtml($attemptId) ?></strong></td>
+</tr>
+<?php endif; ?>
+
+<?php if ($providerName): ?>
+<tr>
+    <th><?= $block->escapeHtml(__('BNPL - Provider')) ?></th>
+    <td><?= $block->escapeHtml($providerName) ?></td>
+</tr>
+<?php endif; ?>
+
+<?php if ($purchaseId): ?>
+<tr>
+    <th><?= $block->escapeHtml(__('BNPL - Purchase ID')) ?></th>
+    <td><strong><?= $block->escapeHtml($purchaseId) ?></strong></td>
+</tr>
+<?php endif; ?>
+
+<?php if ($providerRef): ?>
+<tr>
+    <th><?= $block->escapeHtml(__('BNPL - Provider Reference')) ?></th>
+    <td><?= $block->escapeHtml($providerRef) ?></td>
+</tr>
+<?php endif; ?>
+
+<?php if ($installments): ?>
+<tr>
+    <th><?= $block->escapeHtml(__('BNPL - Installments')) ?></th>
+    <td><?= $block->escapeHtml($installments) ?> <?= $block->escapeHtml(__('months')) ?></td>
+</tr>
+<?php endif; ?>
+
+<?php if ($monthlyAmount): ?>
+<tr>
+    <th><?= $block->escapeHtml(__('BNPL - Monthly Payment')) ?></th>
+    <td><?= $block->escapeHtml($monthlyAmount) ?></td>
+</tr>
+<?php endif; ?>
+
+<?php if ($statusReason): ?>
+<tr>
+    <th><?= $block->escapeHtml(__('BNPL - Status Reason')) ?></th>
+    <td><?= $block->escapeHtml($statusReason) ?></td>
+</tr>
+<?php endif; ?>

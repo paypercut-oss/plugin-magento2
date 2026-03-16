@@ -1,0 +1,144 @@
+<?php
+/**
+ * Paypercut BNPL Payment Method Template for Hyva Checkout
+ * Uses Alpine.data() for CSP-friendly build compatibility.
+ *
+ * IMPORTANT: This template is for STANDARD Hyva Checkout only.
+ * For Zento Checkout (ReactCheckout), installments and redirection are handled
+ * by the React components in Hyva/ReactCheckout/reactapp/src/paymentMethods/paymentForm/
+ *
+ * The installment options are loaded from window.checkoutConfig.payment.paypercut_bnpl
+ * which is populated by Paypercut\Payment\Model\Ui\BnplConfigProvider
+ */
+declare(strict_types=1);
+
+use Magento\Framework\Escaper;
+
+/** @var \Paypercut\Payment\Block\Checkout\BnplConfig $block */
+/** @var Escaper $escaper */
+
+$method = $block->getData('method');
+$bnplConfig = $block->getBnplConfig();
+$installmentOptions = $bnplConfig['installmentOptions'] ?? [];
+$showInstallmentPreview = $bnplConfig['showInstallmentPreview'] ?? true;
+?>
+
+<?php if (!empty($installmentOptions)): ?>
+<div class="paypercut-bnpl-form">
+    <input type="hidden"
+           name="payment[additional_data][installments]"
+           id="paypercut-bnpl-installments"
+           value="<?= $escaper->escapeHtmlAttr($installmentOptions[0]['months'] ?? '') ?>"/>
+
+    <div class="space-y-4">
+        <!-- BNPL Description -->
+        <div class="p-4 bg-blue-50 rounded-lg">
+            <p class="text-sm text-gray-700">
+                <?= $escaper->escapeHtml(__('Pay in installments without interest. Choose the number of installments and pay monthly.')) ?>
+            </p>
+        </div>
+
+        <?php if ($showInstallmentPreview): ?>
+        <!-- Installment Options -->
+        <div>
+            <label class="block font-medium text-gray-700 mb-3">
+                <?= $escaper->escapeHtml(__('Choose the number of installments')) ?>
+            </label>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <?php foreach ($installmentOptions as $index => $option): ?>
+                    <div class="relative">
+                        <input type="radio"
+                               name="bnpl_installments_radio"
+                               id="installment_<?= $escaper->escapeHtmlAttr($option['months']) ?>"
+                               value="<?= $escaper->escapeHtmlAttr($option['months']) ?>"
+                               data-monthly="<?= $escaper->escapeHtmlAttr($option['monthlyAmount'] ?? '') ?>"
+                               <?= $index === 0 ? 'checked' : '' ?>
+                               class="sr-only paypercut-bnpl-radio"
+                               onchange="document.getElementById('paypercut-bnpl-installments').value = this.value; document.getElementById('paypercut-bnpl-monthly-amount').textContent = this.dataset.monthly;"/>
+                        <label for="installment_<?= $escaper->escapeHtmlAttr($option['months']) ?>"
+                               class="paypercut-bnpl-option flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all duration-200 border-gray-200 hover:border-gray-300"
+                               data-months="<?= $escaper->escapeHtmlAttr($option['months']) ?>">
+                            <span class="font-semibold text-lg text-gray-900">
+                                <?= $escaper->escapeHtml($option['label'] ?? ($option['months'] . ' ' . __('rates'))) ?>
+                            </span>
+                            <span class="text-sm text-gray-600 mt-1">
+                                <?= $escaper->escapeHtml($option['monthlyAmount'] ?? '') ?>/<?= $escaper->escapeHtml(__('month')) ?>
+                            </span>
+                        </label>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+
+        <!-- Selected Plan Summary -->
+        <div class="p-4 bg-gray-50 rounded-lg">
+            <p class="text-sm text-gray-700">
+                <span><?= $escaper->escapeHtml(__('You will pay:')) ?></span>
+                <strong class="text-primary font-semibold" id="paypercut-bnpl-monthly-amount"><?= $escaper->escapeHtml($installmentOptions[0]['monthlyAmount'] ?? '') ?></strong>
+                <span><?= $escaper->escapeHtml(__('per month')) ?></span>
+            </p>
+        </div>
+        <?php endif; ?>
+
+        <p class="mt-4 text-sm text-gray-600">
+            <?= $escaper->escapeHtml(__('You will be redirected to Paypercut to complete your payment.')) ?>
+        </p>
+    </div>
+</div>
+
+<script>
+(function() {
+    // Update label styling when radio is selected
+    function updateLabels() {
+        document.querySelectorAll('.paypercut-bnpl-option').forEach(function(label) {
+            var months = label.dataset.months;
+            var radio = document.getElementById('installment_' + months);
+            if (radio && radio.checked) {
+                label.classList.remove('border-gray-200', 'hover:border-gray-300');
+                label.classList.add('border-primary', 'bg-primary/5');
+            } else {
+                label.classList.remove('border-primary', 'bg-primary/5');
+                label.classList.add('border-gray-200', 'hover:border-gray-300');
+            }
+        });
+    }
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', function() {
+        updateLabels();
+        document.querySelectorAll('.paypercut-bnpl-radio').forEach(function(radio) {
+            radio.addEventListener('change', updateLabels);
+        });
+    });
+
+    // Also handle click on labels
+    document.querySelectorAll('.paypercut-bnpl-option').forEach(function(label) {
+        label.addEventListener('click', function() {
+            setTimeout(updateLabels, 10);
+        });
+    });
+})();
+</script>
+<?php else: ?>
+<div class="paypercut-bnpl-form">
+    <div class="space-y-4">
+        <!-- BNPL Description -->
+        <div class="p-4 bg-blue-50 rounded-lg">
+            <p class="text-sm text-gray-700">
+                <?= $escaper->escapeHtml(__('Pay in installments without interest. Choose the number of installments and pay monthly.')) ?>
+            </p>
+        </div>
+
+        <!-- No Options Available -->
+        <div class="p-4 bg-yellow-50 rounded-lg">
+            <p class="text-sm text-yellow-700">
+                <?= $escaper->escapeHtml(__('Installment options will be calculated based on your cart total.')) ?>
+            </p>
+        </div>
+
+        <p class="mt-4 text-sm text-gray-600">
+            <?= $escaper->escapeHtml(__('You will be redirected to Paypercut to complete your payment.')) ?>
+        </p>
+    </div>
+</div>
+<?php endif; ?>

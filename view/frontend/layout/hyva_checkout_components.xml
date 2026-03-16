@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!--
+/**
+ * Paypercut Payment - Hyva Checkout Integration
+ */
+-->
+<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+    <body>
+        <referenceBlock name="checkout.payment.methods">
+            <!-- Payment Renderer: Paypercut Card -->
+            <block name="checkout.payment.method.paypercut_card"
+                   as="paypercut_card"
+                   template="Paypercut_Payment::checkout/payment/method/paypercut-card.phtml"/>
+
+            <!-- Payment Renderer: Paypercut BNPL -->
+            <block name="checkout.payment.method.paypercut_bnpl"
+                   class="Paypercut\Payment\Block\Checkout\BnplConfig"
+                   as="paypercut_bnpl"
+                   template="Paypercut_Payment::checkout/payment/method/paypercut-bnpl.phtml"/>
+        </referenceBlock>
+    </body>
+</page>

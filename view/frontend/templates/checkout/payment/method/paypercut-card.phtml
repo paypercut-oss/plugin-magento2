@@ -1,0 +1,24 @@
+<?php
+/**
+ * Paypercut Card Payment Method Template for Hyva Checkout
+ */
+declare(strict_types=1);
+
+use Magento\Framework\Escaper;
+use Magento\Framework\View\Element\Template;
+
+/** @var Template $block */
+/** @var Escaper $escaper */
+
+$method = $block->getData('method');
+?>
+<div x-data="{
+    get description() {
+        return window.checkoutConfig?.payment?.paypercut_card?.description || '';
+    }
+}">
+    <p x-show="description" class="p-4 bg-gray-100 rounded-lg" x-text="description"></p>
+    <p class="mt-4 text-sm text-gray-600">
+        <?= $escaper->escapeHtml(__('You will be redirected to Paypercut to complete your payment.')) ?>
+    </p>
+</div>

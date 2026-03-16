@@ -1,0 +1,23 @@
+{
+  "name": "paypercut/module-payment",
+  "description": "Paypercut Payment Module",
+  "type": "magento2-module",
+  "version": "1.1.0",
+  "license": "proprietary",
+  "authors": [
+    {
+      "name": "Paypercut",
+      "email": "info@paypercut.com"
+    }
+  ],
+  "require": {
+    "php": "~8.4.0",
+    "magento/framework": ">=103.0.0 <104.0.0"
+  },
+  "autoload": {
+    "files": ["registration.php"],
+    "psr-4": {
+      "Paypercut\\Payment\\": ""
+    }
+  }
+}

@@ -1,0 +1,305 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Config:etc/system_file.xsd">
+    <system>
+        <section id="payment">
+            <!-- Standard Payment -->
+            <group id="paypercut_card" translate="label" type="text" sortOrder="50" showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>Paypercut Payment</label>
+                <comment><![CDATA[<b>Paypercut Payment Gateway</b><br/>Accept card payments and enable saved cards for recurring payments.]]></comment>
+                <fieldset_css>complex paypercut-section</fieldset_css>
+                <frontend_model>Magento\Paypal\Block\Adminhtml\System\Config\Fieldset\Payment</frontend_model>
+
+                <group id="general" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>General Settings</label>
+                    <field id="active" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Enabled</label>
+                        <config_path>payment/paypercut_card/active</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                    </field>
+                    <field id="title" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1">
+                        <label>Title</label>
+                        <config_path>payment/paypercut_card/title</config_path>
+                    </field>
+                    <field id="description" translate="label" type="textarea" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="1">
+                        <label>Description</label>
+                        <config_path>payment/paypercut_card/description</config_path>
+                    </field>
+                    <field id="sort_order" translate="label" type="text" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Sort Order</label>
+                        <config_path>payment/paypercut_card/sort_order</config_path>
+                        <frontend_class>validate-number</frontend_class>
+                    </field>
+                </group>
+
+                <group id="credentials" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>API Credentials</label>
+                    <field id="environment" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Environment</label>
+                        <config_path>payment/paypercut_card/environment</config_path>
+                        <source_model>Paypercut\Payment\Model\Adminhtml\Source\Environment</source_model>
+                    </field>
+                    <field id="api_key" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>API Key</label>
+                        <config_path>payment/paypercut_card/api_key</config_path>
+                    </field>
+                    <field id="secret_key" translate="label" type="text" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Secret Key</label>
+                        <config_path>payment/paypercut_card/secret_key</config_path>
+                    </field>
+                    <field id="webhook_secret" translate="label comment" type="obscure" sortOrder="35" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Webhook Secret</label>
+                        <config_path>payment/paypercut_card/webhook_secret</config_path>
+                        <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
+                        <comment>Webhook signing secret from your Paypercut dashboard. Required for verifying webhook authenticity.</comment>
+                    </field>
+                    <field id="debug" translate="label" type="select" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Debug Mode</label>
+                        <config_path>payment/paypercut_card/debug</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                        <comment>Enable to log API requests and responses</comment>
+                    </field>
+                </group>
+
+                <group id="order" type="text" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>Order Settings</label>
+                    <field id="order_status" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>New Order Status</label>
+                        <config_path>payment/paypercut_card/order_status</config_path>
+                        <source_model>Magento\Sales\Model\Config\Source\Order\Status\NewStatus</source_model>
+                    </field>
+                    <field id="payment_action" translate="label" type="select" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Payment Action</label>
+                        <config_path>payment/paypercut_card/payment_action</config_path>
+                        <source_model>Paypercut\Payment\Model\Adminhtml\Source\PaymentAction</source_model>
+                    </field>
+                    <field id="refund_action" translate="label" type="select" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Refund Action</label>
+                        <config_path>payment/paypercut_card/refund_action</config_path>
+                        <source_model>Paypercut\Payment\Model\Adminhtml\Source\RefundAction</source_model>
+                        <comment>Choose how refunds should be handled</comment>
+                    </field>
+                </group>
+
+                <group id="vault" type="text" sortOrder="35" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>Saved Cards (Vault)</label>
+                    <field id="active" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Enable Saved Cards</label>
+                        <config_path>payment/paypercut_vault/active</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                        <comment>Allow customers to save cards for future purchases and subscriptions</comment>
+                    </field>
+                </group>
+
+                <group id="country" translate="label" type="text" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Country Settings</label>
+                    <field id="allowspecific" translate="label" type="allowspecific" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Payment From Applicable Countries</label>
+                        <config_path>payment/paypercut_card/allowspecific</config_path>
+                        <source_model>Magento\Payment\Model\Config\Source\Allspecificcountries</source_model>
+                    </field>
+                    <field id="specificcountry" translate="label" type="multiselect" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Payment From Specific Countries</label>
+                        <config_path>payment/paypercut_card/specificcountry</config_path>
+                        <source_model>Magento\Directory\Model\Config\Source\Country</source_model>
+                    </field>
+                </group>
+            </group>
+
+            <!-- BNPL Payment -->
+            <group id="paypercut_bnpl" translate="label" type="text" sortOrder="51" showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>Paypercut BNPL (Pay in installments)</label>
+                <comment><![CDATA[<b>Buy Now Pay Later</b><br/>Allow customers to pay in installments. <a href="https://docs.paypercut.io/api-reference" target="_blank">Documentation</a>]]></comment>
+                <fieldset_css>complex paypercut-bnpl-section</fieldset_css>
+                <frontend_model>Magento\Paypal\Block\Adminhtml\System\Config\Fieldset\Payment</frontend_model>
+
+                <group id="general" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>General Settings</label>
+                    <field id="active" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Enabled</label>
+                        <config_path>payment/paypercut_bnpl/active</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                    </field>
+                    <field id="title" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1">
+                        <label>Title</label>
+                        <config_path>payment/paypercut_bnpl/title</config_path>
+                    </field>
+                    <field id="secret_key" translate="label" type="text" sortOrder="25" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>BNPL Secret Key</label>
+                        <config_path>payment/paypercut_bnpl/secret_key</config_path>
+                    </field>
+                    <field id="sort_order" translate="label" type="text" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Sort Order</label>
+                        <config_path>payment/paypercut_bnpl/sort_order</config_path>
+                        <frontend_class>validate-number</frontend_class>
+                    </field>
+                </group>
+
+                <group id="limits" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>Order Limits</label>
+                    <field id="min_order_total" translate="label" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Minimum Order Total</label>
+                        <config_path>payment/paypercut_bnpl/min_order_total</config_path>
+                        <frontend_class>validate-number</frontend_class>
+                        <comment>Minimum order amount for BNPL availability</comment>
+                    </field>
+                    <field id="max_order_total" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Maximum Order Total</label>
+                        <config_path>payment/paypercut_bnpl/max_order_total</config_path>
+                        <frontend_class>validate-number</frontend_class>
+                        <comment>Maximum order amount for BNPL availability</comment>
+                    </field>
+                </group>
+
+                <group id="installments" type="text" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>Installment Options</label>
+                    <field id="installments" translate="label" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Available Installments</label>
+                        <config_path>payment/paypercut_bnpl/installments</config_path>
+                        <comment>Comma-separated list of available installment months (e.g., 3,6,12)</comment>
+                    </field>
+                    <field id="show_installment_preview" translate="label comment" type="select" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Show Installment Preview</label>
+                        <config_path>payment/paypercut_bnpl/show_installment_preview</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                        <comment>Show installment options preview during checkout</comment>
+                    </field>
+                </group>
+
+                <group id="country" translate="label" type="text" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Country Settings</label>
+                    <field id="allowspecific" translate="label" type="allowspecific" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Payment From Applicable Countries</label>
+                        <config_path>payment/paypercut_bnpl/allowspecific</config_path>
+                        <source_model>Magento\Payment\Model\Config\Source\Allspecificcountries</source_model>
+                    </field>
+                    <field id="specificcountry" translate="label" type="multiselect" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Payment From Specific Countries</label>
+                        <config_path>payment/paypercut_bnpl/specificcountry</config_path>
+                        <source_model>Magento\Directory\Model\Config\Source\Country</source_model>
+                    </field>
+                </group>
+            </group>
+
+            <!-- Subscriptions -->
+            <group id="paypercut_subscription" translate="label" type="text" sortOrder="52" showInDefault="1" showInWebsite="1" showInStore="1">
+                <label>Paypercut Subscriptions (Recurring Payments)</label>
+                <comment><![CDATA[<b>Subscription Payments</b><br/>Enable recurring payments for subscription products. Requires saved cards (Vault) to be enabled. <a href="https://docs.paypercut.io/api-reference" target="_blank">Documentation</a>]]></comment>
+                <fieldset_css>complex paypercut-subscription-section</fieldset_css>
+                <frontend_model>Magento\Paypal\Block\Adminhtml\System\Config\Fieldset\Payment</frontend_model>
+
+                <group id="general" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>General Settings</label>
+                    <field id="active" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Enabled</label>
+                        <config_path>payment/paypercut_subscription/active</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                        <comment>Enable subscription functionality for marked products</comment>
+                    </field>
+                    <field id="title" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1">
+                        <label>Subscription Label</label>
+                        <config_path>payment/paypercut_subscription/title</config_path>
+                        <comment>Label shown to customers for subscription option</comment>
+                    </field>
+                    <field id="description" translate="label" type="textarea" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="1">
+                        <label>Description</label>
+                        <config_path>payment/paypercut_subscription/description</config_path>
+                        <comment>Description shown to customers explaining the subscription</comment>
+                    </field>
+                </group>
+
+                <group id="billing" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>Billing Settings</label>
+                    <field id="billing_interval" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Default Billing Interval</label>
+                        <config_path>payment/paypercut_subscription/billing_interval</config_path>
+                        <source_model>Paypercut\Payment\Model\Adminhtml\Source\BillingInterval</source_model>
+                        <comment>Default interval for subscription billing cycles</comment>
+                    </field>
+                    <field id="billing_interval_count" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Billing Interval Count</label>
+                        <config_path>payment/paypercut_subscription/billing_interval_count</config_path>
+                        <frontend_class>validate-number validate-greater-than-zero</frontend_class>
+                        <comment>Number of intervals between billings (e.g., 1 for every month, 2 for every 2 months)</comment>
+                    </field>
+                    <field id="billing_day" translate="label" type="text" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Billing Day of Month</label>
+                        <config_path>payment/paypercut_subscription/billing_day</config_path>
+                        <frontend_class>validate-number</frontend_class>
+                        <comment>Day of month for billing (1-28). Leave empty for order date anchor.</comment>
+                    </field>
+                    <field id="collection_method" translate="label" type="select" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Collection Method</label>
+                        <config_path>payment/paypercut_subscription/collection_method</config_path>
+                        <source_model>Paypercut\Payment\Model\Adminhtml\Source\CollectionMethod</source_model>
+                        <comment>How to collect payment for invoices</comment>
+                    </field>
+                </group>
+
+                <group id="trial" type="text" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>Trial Settings</label>
+                    <field id="enable_trial" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Enable Trial Period</label>
+                        <config_path>payment/paypercut_subscription/enable_trial</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                    </field>
+                    <field id="trial_days" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Trial Period (Days)</label>
+                        <config_path>payment/paypercut_subscription/trial_days</config_path>
+                        <frontend_class>validate-number</frontend_class>
+                        <depends>
+                            <field id="enable_trial">1</field>
+                        </depends>
+                        <comment>Number of days for the free trial period</comment>
+                    </field>
+                    <field id="trial_missing_payment" translate="label" type="select" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Missing Payment Behavior</label>
+                        <config_path>payment/paypercut_subscription/trial_missing_payment</config_path>
+                        <source_model>Paypercut\Payment\Model\Adminhtml\Source\MissingPaymentBehavior</source_model>
+                        <depends>
+                            <field id="enable_trial">1</field>
+                        </depends>
+                        <comment>Action when no payment method at trial end</comment>
+                    </field>
+                </group>
+
+                <group id="cancellation" type="text" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>Cancellation Settings</label>
+                    <field id="cancel_at_period_end" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Cancel at Period End</label>
+                        <config_path>payment/paypercut_subscription/cancel_at_period_end</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                        <comment>When cancelled, continue until the end of the current billing period</comment>
+                    </field>
+                    <field id="allow_customer_cancel" translate="label" type="select" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Allow Customer Cancellation</label>
+                        <config_path>payment/paypercut_subscription/allow_customer_cancel</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                        <comment>Allow customers to cancel their subscriptions from My Account</comment>
+                    </field>
+                    <field id="allow_customer_pause" translate="label" type="select" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Allow Customer Pause</label>
+                        <config_path>payment/paypercut_subscription/allow_customer_pause</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                        <comment>Allow customers to pause their subscriptions from My Account</comment>
+                    </field>
+                </group>
+
+                <group id="notifications" type="text" sortOrder="50" showInDefault="1" showInWebsite="1" showInStore="0" translate="label">
+                    <label>Notification Settings</label>
+                    <field id="renewal_reminder_days" translate="label" type="text" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Renewal Reminder (Days Before)</label>
+                        <config_path>payment/paypercut_subscription/renewal_reminder_days</config_path>
+                        <frontend_class>validate-number</frontend_class>
+                        <comment>Send renewal reminder email X days before billing. Leave empty to disable.</comment>
+                    </field>
+                    <field id="failed_payment_notify" translate="label" type="select" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
+                        <label>Failed Payment Notification</label>
+                        <config_path>payment/paypercut_subscription/failed_payment_notify</config_path>
+                        <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                        <comment>Notify customer when a subscription payment fails</comment>
+                    </field>
+                </group>
+            </group>
+        </section>
+    </system>
+</config>

@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+    <!-- Standard Payment Config Provider -->
+    <type name="Magento\Checkout\Model\CompositeConfigProvider">
+        <arguments>
+            <argument name="configProviders" xsi:type="array">
+                <item name="paypercut_config_provider" xsi:type="object">Paypercut\Payment\Model\Ui\ConfigProvider</item>
+                <item name="paypercut_bnpl_config_provider" xsi:type="object">Paypercut\Payment\Model\Ui\BnplConfigProvider</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <!-- Vault Token UI Component Provider -->
+    <type name="Magento\Vault\Model\Ui\TokensConfigProvider">
+        <arguments>
+            <argument name="tokenUiComponentProviders" xsi:type="array">
+                <item name="paypercut_card" xsi:type="object">Paypercut\Payment\Model\Ui\TokenUiComponentProvider</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <type name="Paypercut\Payment\Block\Info">
+        <arguments>
+            <argument name="data" xsi:type="array">
+                <item xsi:type="string" name="is_secure_mode">1</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <type name="Paypercut\Payment\Block\BnplInfo" />
+</config>

@@ -1,0 +1,166 @@
+/**
+ * Paypercut Payment Styles
+ */
+
+/* BNPL Badge */
+.payment-method-title .bnpl-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 12px;
+    margin-left: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* BNPL Description */
+.bnpl-description {
+    background: #f8f9fa;
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    border-left: 4px solid #6366f1;
+}
+
+.bnpl-description p {
+    margin: 0;
+    color: #374151;
+    font-size: 14px;
+}
+
+/* Installment Options */
+.bnpl-installments {
+    margin-bottom: 20px;
+}
+
+.bnpl-installments > .label {
+    display: block;
+    margin-bottom: 12px;
+    font-weight: 600;
+    color: #111827;
+}
+
+.installment-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.installment-option {
+    display: flex;
+    align-items: center;
+    padding: 16px 20px;
+    border: 2px solid #e5e7eb;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex: 1;
+    min-width: 140px;
+    max-width: 200px;
+}
+
+.installment-option:hover {
+    border-color: #6366f1;
+    background: #f5f3ff;
+}
+
+.installment-option.selected {
+    border-color: #6366f1;
+    background: #f5f3ff;
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+}
+
+.installment-option .option-radio {
+    margin-right: 12px;
+}
+
+.installment-option .option-radio input[type="radio"] {
+    width: 20px;
+    height: 20px;
+    accent-color: #6366f1;
+}
+
+.installment-option .option-details {
+    display: flex;
+    flex-direction: column;
+}
+
+.installment-option .months {
+    font-weight: 700;
+    color: #111827;
+    font-size: 16px;
+}
+
+.installment-option .amount {
+    color: #6366f1;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+/* BNPL Summary */
+.bnpl-summary {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    color: #fff;
+    padding: 16px 20px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.bnpl-summary p {
+    margin: 0;
+    font-size: 16px;
+}
+
+.bnpl-summary strong {
+    font-size: 24px;
+    display: block;
+    margin: 4px 0;
+}
+
+/* Vault Saved Cards */
+.payment-method .saved-card-info {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 12px;
+    color: #6b7280;
+    font-size: 14px;
+}
+
+.payment-method .saved-card-info .card-icon {
+    margin-right: 8px;
+}
+
+.payment-method .saved-card-info .card-number {
+    font-family: 'Monaco', 'Menlo', monospace;
+    background: #f3f4f6;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-right: 8px;
+}
+
+.payment-method .saved-card-info .card-expiry {
+    color: #9ca3af;
+}
+
+/* Payment method description */
+.payment-method-description {
+    padding: 12px 0;
+    color: #6b7280;
+    font-size: 14px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .installment-options {
+        flex-direction: column;
+    }
+
+    .installment-option {
+        max-width: none;
+    }
+}
+

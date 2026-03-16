@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+    <!-- Create subscriptions after successful order placement with Paypercut payment -->
+    <event name="checkout_submit_all_after">
+        <observer name="paypercut_create_subscription_after_order" instance="Paypercut\Payment\Observer\CreateSubscriptionAfterOrderPlace" />
+    </event>
+    
+    <!-- Create refund in Paypercut when credit memo is created -->
+    <event name="sales_order_creditmemo_save_after">
+        <observer name="paypercut_create_refund_after_creditmemo" instance="Paypercut\Payment\Observer\CreateRefundAfterCreditMemo" />
+    </event>
+</config>
