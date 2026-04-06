@@ -718,7 +718,7 @@ Because payment data is entered exclusively on Paypercut's PCI-certified hosted 
 
 ### Webhook Security
 
-Inbound IPN (Instant Payment Notification) webhooks from Paypercut are validated using a shared webhook secret configured in the Magento admin. The IPN controller implements Magento's CSRF-aware interface to ensure that only authenticated and verified webhook requests are processed.
+Inbound IPN (Instant Payment Notification) webhooks from Paypercut are validated using HMAC-SHA256 signature verification against a shared webhook secret configured in the Magento admin. This includes timestamp tolerance checks to prevent replay attacks. Merchants should ensure the webhook secret is configured to enable this protection.
 
 ---
 
