@@ -15,6 +15,7 @@ A comprehensive payment integration module for Magento 2 that provides card paym
 - [API Integration](#api-integration)
 - [Frontend Components](#frontend-components)
 - [Troubleshooting](#troubleshooting)
+- [Security](#security)
 
 ---
 
@@ -691,6 +692,33 @@ Clear caches after configuration changes:
 bin/magento cache:flush
 bin/magento setup:di:compile
 ```
+
+---
+
+## Security
+
+### Payment Integration Method
+
+The Paypercut module uses a **redirect-based (hosted payment page)** integration for all payment methods -- Card, BNPL, and Vault. When a customer proceeds to pay, they are redirected from the Magento storefront to Paypercut's secure hosted payment page, where all sensitive payment data is collected and processed. Upon completion, the customer is returned to the merchant's Magento site via a callback URL.
+
+At no point does the Magento server receive, handle, or have access to raw cardholder data such as card numbers, CVV/CVC codes, expiration dates, or cardholder names.
+
+### PCI Compliance
+
+Because payment data is entered exclusively on Paypercut's PCI-certified hosted payment page and never passes through the merchant's Magento environment, this integration qualifies for **PCI SAQ A** -- the simplest Self-Assessment Questionnaire level. SAQ A applies to merchants that have fully outsourced all cardholder data processing to a PCI DSS-validated third-party provider and do not electronically store, process, or transmit any cardholder data on their own systems.
+
+### Data Handling Summary
+
+| Concern | Status |
+|---------|--------|
+| **Customer payment data entered on Magento** | No. All payment data is entered on Paypercut's hosted page. |
+| **Sensitive payment data stored on Magento** | No. No card numbers, CVV codes, expiration dates, or cardholder names are stored. |
+| **Data stored on Magento** | Transaction reference IDs, payment intent IDs, and opaque payment method tokens only -- used for order management, refunds, and subscription lifecycle. |
+| **Saved cards (Vault)** | Stored as tokenized references (public hashes) via the Magento Vault framework. No actual card data is retained. |
+
+### Webhook Security
+
+Inbound IPN (Instant Payment Notification) webhooks from Paypercut are validated using a shared webhook secret configured in the Magento admin. The IPN controller implements Magento's CSRF-aware interface to ensure that only authenticated and verified webhook requests are processed.
 
 ---
 
