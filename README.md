@@ -97,7 +97,6 @@ Navigate to **Stores > Configuration > Sales > Payment Methods** in the Magento 
 | **Title** | Payment method title shown at checkout |
 | **Description** | Description shown to customers |
 | **Environment** | Sandbox or Production |
-| **API Key** | Your Paypercut API key |
 | **Secret Key** | Your Paypercut secret key |
 | **Payment Action** | `authorize_capture` (immediate charge) or `authorize` (manual capture) |
 | **New Order Status** | Order status after successful payment |

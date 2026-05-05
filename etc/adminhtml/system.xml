@@ -38,10 +38,6 @@
                         <config_path>payment/paypercut_card/environment</config_path>
                         <source_model>Paypercut\Payment\Model\Adminhtml\Source\Environment</source_model>
                     </field>
-                    <field id="api_key" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="0">
-                        <label>API Key</label>
-                        <config_path>payment/paypercut_card/api_key</config_path>
-                    </field>
                     <field id="secret_key" translate="label" type="text" sortOrder="30" showInDefault="1" showInWebsite="1" showInStore="0">
                         <label>Secret Key</label>
                         <config_path>payment/paypercut_card/secret_key</config_path>
