@@ -10,6 +10,7 @@ use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
 use Magento\Sales\Model\Order\Payment\Transaction;
 use Magento\Sales\Api\TransactionRepositoryInterface;
+use Magento\Framework\Encryption\EncryptorInterface;
 use Magento\Framework\DB\TransactionFactory;
 use Magento\Sales\Model\Service\InvoiceService;
 use Magento\Sales\Model\Service\CreditmemoService;
@@ -102,6 +103,11 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
     private $logger;
 
     /**
+     * @var EncryptorInterface
+     */
+    private $encryptor;
+
+    /**
      * @param RequestInterface $request
      * @param JsonFactory $jsonFactory
      * @param OrderRepositoryInterface $orderRepository
@@ -116,6 +122,7 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
      * @param ScopeConfigInterface $scopeConfig
      * @param LoggerInterface $logger
      * @param PaypercutOrderHelper $orderHelper
+     * @param EncryptorInterface $encryptor
      */
     public function __construct(
         RequestInterface $request,
@@ -131,7 +138,8 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         PaypercutClient $apiClient,
         ScopeConfigInterface $scopeConfig,
         LoggerInterface $logger,
-        PaypercutOrderHelper $orderHelper
+        PaypercutOrderHelper $orderHelper,
+        EncryptorInterface $encryptor
     ) {
         $this->request = $request;
         $this->jsonFactory = $jsonFactory;
@@ -147,6 +155,7 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         $this->scopeConfig = $scopeConfig;
         $this->logger = $logger;
         $this->orderHelper = $orderHelper;
+        $this->encryptor = $encryptor;
     }
 
     /**
@@ -643,10 +652,14 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
      */
     private function validateIpn(string $rawBody): bool
     {
-        $webhookSecret = $this->scopeConfig->getValue(
+        $encryptedWebhookSecret = (string) $this->scopeConfig->getValue(
             self::CONFIG_PATH_WEBHOOK_SECRET,
             ScopeInterface::SCOPE_STORE
         );
+
+        $webhookSecret = $encryptedWebhookSecret !== ''
+            ? (string) $this->encryptor->decrypt($encryptedWebhookSecret)
+            : '';
 
         if (empty($webhookSecret)) {
             $this->logger->warning('Paypercut IPN: No webhook secret configured, skipping signature validation');
