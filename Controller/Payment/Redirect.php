@@ -5,6 +5,7 @@ use Magento\Framework\App\Action\HttpGetActionInterface;
 use Magento\Framework\Controller\Result\RedirectFactory;
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Sales\Api\OrderRepositoryInterface;
+use Magento\Framework\App\ProductMetadataInterface;
 use Magento\Framework\UrlInterface;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
@@ -17,6 +18,8 @@ use Psr\Log\LoggerInterface;
  */
 class Redirect implements HttpGetActionInterface
 {
+    private const PLUGIN_VERSION = '1.1.2';
+
     /**
      * @var RedirectFactory
      */
@@ -48,6 +51,11 @@ class Redirect implements HttpGetActionInterface
     private $scopeConfig;
 
     /**
+     * @var ProductMetadataInterface
+     */
+    private $productMetadata;
+
+    /**
      * @var LoggerInterface
      */
     private $logger;
@@ -59,6 +67,7 @@ class Redirect implements HttpGetActionInterface
      * @param PaypercutClient $paypercutClient
      * @param UrlInterface $urlBuilder
      * @param ScopeConfigInterface $scopeConfig
+     * @param ProductMetadataInterface $productMetadata
      * @param LoggerInterface $logger
      */
     public function __construct(
@@ -68,6 +77,7 @@ class Redirect implements HttpGetActionInterface
         PaypercutClient $paypercutClient,
         UrlInterface $urlBuilder,
         ScopeConfigInterface $scopeConfig,
+        ProductMetadataInterface $productMetadata,
         LoggerInterface $logger
     ) {
         $this->redirectFactory = $redirectFactory;
@@ -76,6 +86,7 @@ class Redirect implements HttpGetActionInterface
         $this->paypercutClient = $paypercutClient;
         $this->urlBuilder = $urlBuilder;
         $this->scopeConfig = $scopeConfig;
+        $this->productMetadata = $productMetadata;
         $this->logger = $logger;
     }
 
@@ -210,8 +221,15 @@ class Redirect implements HttpGetActionInterface
                 'capture_method' => 'automatic'
             ],
             'metadata' => [
-                'order_id' => $order->getIncrementId(),
-                'order_entity_id' => $order->getId()
+                'order_id'                     => $order->getIncrementId(),
+                'order_entity_id'              => $order->getId(),
+                'platform'                     => 'magento2',
+                'platform_version'             => $this->productMetadata->getVersion(),
+                'plugin_version'               => self::PLUGIN_VERSION,
+                'php_version'                  => PHP_VERSION,
+                'site_url'                     => $this->urlBuilder->getBaseUrl(),
+                'paypercut_checkout_mode'      => 'hosted',
+                'paypercut_checkout_operation' => 'payment',
             ]
         ];
 
