@@ -18,7 +18,7 @@ use Psr\Log\LoggerInterface;
  */
 class Redirect implements HttpGetActionInterface
 {
-    private const PLUGIN_VERSION = '1.1.2';
+    private const PLUGIN_VERSION = '1.1.3';
 
     /**
      * @var RedirectFactory
