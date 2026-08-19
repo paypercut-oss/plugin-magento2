@@ -191,21 +191,17 @@ class Redirect implements HttpGetActionInterface
     {
         $this->logger->info('Paypercut: Processing CARD payment');
 
-        // Build line items from order items
+        $currency = $order->getOrderCurrencyCode();
         $lineItems = [];
         foreach ($order->getAllVisibleItems() as $item) {
-            $lineItems[] = [
-                'name' => $item->getName(),
-                'quantity' => (int) $item->getQtyOrdered(),
-                'unit_price' => (int) round($item->getPrice() * 100) // Convert to cents
-            ];
+            $lineItems[] = $this->buildLineItem($item, $currency);
         }
 
         // Create checkout session with Paypercut
         $amount = (int) round($order->getGrandTotal() * 100); // Convert to cents
         $checkoutData = [
             'amount' => $amount,
-            'currency' => $order->getOrderCurrencyCode(),
+            'currency' => $currency,
             'mode' => 'payment',
             'ui_mode' => 'hosted', // Required field per Paypercut docs
             'locale' => $this->getLocaleForStore($order->getStoreId()),
@@ -223,7 +219,7 @@ class Redirect implements HttpGetActionInterface
             'metadata' => [
                 'order_id'                     => $order->getIncrementId(),
                 'order_entity_id'              => $order->getId(),
-                'platform'                     => 'magento2',
+                'integration_platform'         => 'magento2',
                 'platform_version'             => $this->productMetadata->getVersion(),
                 'plugin_version'               => self::PLUGIN_VERSION,
                 'php_version'                  => PHP_VERSION,
@@ -233,6 +229,11 @@ class Redirect implements HttpGetActionInterface
             ]
         ];
 
+        $shippingOptions = $this->getShippingOptions($order, $currency);
+        if (!empty($shippingOptions)) {
+            $checkoutData['shipping_options'] = $shippingOptions;
+        }
+
         // Add customer info if available
         if ($order->getCustomerEmail()) {
             $checkoutData['customer_email'] = $order->getCustomerEmail();
@@ -241,6 +242,103 @@ class Redirect implements HttpGetActionInterface
         $this->logger->info('Paypercut: Calling createCheckout API', ['data' => $checkoutData]);
 
         return $this->paypercutClient->createCheckout($checkoutData);
+    }
+
+    /**
+     * @param \Magento\Sales\Model\Order\Item $item
+     * @param string $currency
+     * @return array
+     */
+    private function buildLineItem($item, string $currency): array
+    {
+        $quantity = max(1, (int) $item->getQtyOrdered());
+
+        $lineNet = (float) $item->getRowTotal() - (float) $item->getDiscountAmount();
+        $lineTax = (float) $item->getTaxAmount();
+        $grossTotalMinor = max(0, (int) round(($lineNet + $lineTax) * 100));
+
+        if ($grossTotalMinor % $quantity === 0) {
+            $unitAmount = intdiv($grossTotalMinor, $quantity);
+        } else {
+            $quantity = 1;
+            $unitAmount = $grossTotalMinor;
+        }
+
+        $taxRateData = null;
+        if ($lineTax > 0 && $lineNet > 0) {
+            $percentage = ($lineTax / $lineNet) * 100;
+            // Some Magento stores compute tax before discount is applied, which can push
+            // the net/tax ratio above 100% on a heavily discounted line. The API rejects a
+            // percentage outside 0-100, so fall back to unspecified tax_behavior for that
+            // line rather than let a single item break the whole checkout session.
+            if ($percentage <= 100) {
+                $taxRateData = [
+                    'display_name' => (string) __('Tax'),
+                    'percentage' => number_format($percentage, 2, '.', ''),
+                    'inclusive' => true,
+                ];
+            }
+        }
+
+        $lineItem = [
+            'quantity' => $quantity,
+            'price_data' => [
+                'currency' => $currency,
+                'unit_amount' => $unitAmount,
+                'tax_behavior' => null === $taxRateData ? 'unspecified' : 'inclusive',
+                'product_data' => [
+                    'name' => $item->getName(),
+                ],
+            ],
+        ];
+
+        if (null !== $taxRateData) {
+            $lineItem['tax_rates_data'] = [$taxRateData];
+        }
+
+        $productId = $item->getProductId();
+        if ($productId) {
+            $lineItem['metadata'] = ['magento_product_id' => (string) $productId];
+        }
+
+        return $lineItem;
+    }
+
+    /**
+     * @param \Magento\Sales\Model\Order $order
+     * @param string $currency
+     * @return array
+     */
+    private function getShippingOptions($order, string $currency): array
+    {
+        $amountMinor = (int) round((float) $order->getShippingInclTax() * 100);
+
+        if ($amountMinor <= 0) {
+            return [];
+        }
+
+        $label = $order->getShippingDescription() ?: __('Shipping');
+
+        $shippingRateData = [
+            'display_name' => (string) $label,
+            'type' => 'fixed_amount',
+            'fixed_amount' => [
+                'amount' => $amountMinor,
+                'currency' => $currency,
+            ],
+            'tax_behavior' => 'inclusive',
+        ];
+
+        $shippingMethod = $order->getShippingMethod();
+        if ($shippingMethod) {
+            $shippingRateData['metadata'] = [
+                'magento_shipping_method' => (string) $shippingMethod,
+            ];
+        }
+
+        return [
+            ['shipping_rate_data' => $shippingRateData],
+        ];
     }
 
     /**
