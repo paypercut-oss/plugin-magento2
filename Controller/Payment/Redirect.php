@@ -219,7 +219,7 @@ class Redirect implements HttpGetActionInterface
             'metadata' => [
                 'order_id'                     => $order->getIncrementId(),
                 'order_entity_id'              => $order->getId(),
-                'integration_platform'         => 'magento2',
+                'platform'                     => 'magento2',
                 'platform_version'             => $this->productMetadata->getVersion(),
                 'plugin_version'               => self::PLUGIN_VERSION,
                 'php_version'                  => PHP_VERSION,
