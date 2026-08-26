@@ -182,8 +182,10 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
 
             $rejection = $this->validateIpn($rawBody);
 
-            if ($rejection !== '') {
-                $this->reject($rejection['code'], $rejection['attrs']);
+            // validateIpn() returns [] for an accepted delivery. Comparing it
+            // against '' matched every delivery, valid ones included.
+            if ($rejection !== []) {
+                $this->reject((string) $rejection['code'], (array) ($rejection['attrs'] ?? []));
 
                 $result->setHttpResponseCode(400);
 

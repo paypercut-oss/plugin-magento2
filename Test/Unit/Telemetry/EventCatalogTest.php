@@ -61,6 +61,22 @@ class EventCatalogTest extends TestCase
         }
     }
 
+    /**
+     * The rejection branch decides whether a delivery is processed at all.
+     *
+     * validateIpn() returns an array; comparing it against '' sent every
+     * delivery — valid signatures included — into reject() and 500'd the
+     * endpoint on a TypeError that catch (\Exception) does not catch. The suite
+     * cannot instantiate a Magento controller, so the guard is on the source.
+     */
+    public function testTheWebhookRejectionBranchComparesAgainstAnArray(): void
+    {
+        $source = (string) file_get_contents($this->path('Controller/Payment/Ipn.php'));
+
+        $this->assertStringContainsString('$rejection !== []', $source);
+        $this->assertStringNotContainsString("\$rejection !== ''", $source);
+    }
+
     public function testTheSuiteScannedSomething(): void
     {
         $this->assertGreaterThan(20, count($this->emittedEventNames()));
