@@ -1,0 +1,28 @@
+<?php
+/**
+ * The "what is shared" disclosure.
+ *
+ * Kept word-identical to the `Debug sessions (client telemetry)` section of
+ * README.md — a merchant agreeing to one thing while the documentation says
+ * another is a real problem regardless of who is reading. DisclosureTest fails
+ * if the two drift.
+ *
+ * @var \Paypercut\Payment\Block\Adminhtml\System\Config\DebugSession $block
+ */
+?>
+<details class="paypercut-debug-session__disclosure">
+    <summary><?= $block->escapeHtml(__('What is shared')) ?></summary>
+    <p>
+        <?= $block->escapeHtml(__('Module, Magento, PHP and theme versions; the third-party modules enabled on this store and their versions; how this store has the Paypercut payment methods configured (which options are switched on — never the values of your credentials); a record of each checkout, refund and payment notification the module handled and whether it succeeded, identified by Magento order number and Paypercut payment reference; when something fails, the error message, the file and line it came from, and which module or theme raised it; and when the session started and stopped.')) ?>
+    </p>
+    <p>
+        <strong><?= $block->escapeHtml(__('Not shared:')) ?></strong>
+        <?= $block->escapeHtml(__('customer names, email addresses, billing or shipping addresses, order totals, line items, payment card data, the reason text you type when issuing a refund, or any API key, webhook secret or password.')) ?>
+    </p>
+    <p>
+        <?= $block->escapeHtml(__('Your API key is never sent to the telemetry service. It is used once, over HTTPS, to obtain a short-lived diagnostic token from api.paypercut.io.')) ?>
+    </p>
+    <p>
+        <?= $block->escapeHtml(__('Paypercut keeps this diagnostic data for 30 days.')) ?>
+    </p>
+</details>

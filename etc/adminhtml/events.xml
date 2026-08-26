@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+    <!-- Expire the session and drain the queue on ordinary admin page loads -->
+    <event name="controller_action_predispatch">
+        <observer name="paypercut_telemetry_reap_and_flush" instance="Paypercut\Payment\Observer\Adminhtml\ReapAndFlushTelemetry" />
+    </event>
+
+    <!-- Re-send the configuration snapshot when the payment settings change mid-session -->
+    <event name="admin_system_config_changed_section_payment">
+        <observer name="paypercut_telemetry_configuration_changed" instance="Paypercut\Payment\Observer\Adminhtml\TelemetryConfigurationChanged" />
+    </event>
+</config>
