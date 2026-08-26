@@ -65,6 +65,14 @@ class EventRecorder
         // here may write: this runs on checkout requests.
         $this->buffer[] = $event->envelope();
 
+        // The queue is capped at delivery, but a cron pass over thousands of
+        // BNPL orders records in ONE request, so the buffer needs the same
+        // bound or it holds every envelope in memory until shutdown. Oldest
+        // first, exactly as EventQueue::cap() drops them.
+        while (count($this->buffer) > TelemetrySession::MAX_QUEUE_EVENTS) {
+            array_shift($this->buffer);
+        }
+
         if (!$this->registered) {
             $this->registered = true;
             register_shutdown_function([$this, 'persist']);
