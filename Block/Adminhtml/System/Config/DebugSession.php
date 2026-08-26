@@ -140,25 +140,31 @@ class DebugSession extends Field
      */
     public function getJsConfig(): string
     {
-        return $this->json->serialize([
-            'startUrl' => $this->getUrl('paypercut/telemetry/start'),
-            'stopUrl' => $this->getUrl('paypercut/telemetry/stop'),
-            'statusUrl' => $this->getUrl('paypercut/telemetry/status'),
-            'formKey' => $this->formKey->getFormKey(),
-            'pollSeconds' => TelemetrySession::POLL_INTERVAL_SECONDS,
-            'now' => time(),
-            'initial' => $this->getState(),
-            'i18n' => [
-                'starting' => (string) __('Starting…'),
-                'startSession' => (string) __('Start session'),
-                'stopping' => (string) __('Stopping…'),
-                'stopNow' => (string) __('Stop now'),
-                'copied' => (string) __('Copied'),
-                'sessionEnded' => (string) __('Debug session ended. Paypercut stops receiving data from this store.'),
-                'networkError' => (string) __('The request could not be completed. Please try again.'),
-                'adminUnreachable' => (string) __('This page cannot reach the store admin any more. Reload the page to see the current state.'),
-            ],
-        ]);
+        // The payload is emitted unescaped inside a <script> block, where a
+        // literal '<' from any value would close it early.
+        return str_replace(
+            ['<', '>', '&'],
+            ['\u003C', '\u003E', '\u0026'],
+            (string) $this->json->serialize([
+                'startUrl' => $this->getUrl('paypercut/telemetry/start'),
+                'stopUrl' => $this->getUrl('paypercut/telemetry/stop'),
+                'statusUrl' => $this->getUrl('paypercut/telemetry/status'),
+                'formKey' => $this->formKey->getFormKey(),
+                'pollSeconds' => TelemetrySession::POLL_INTERVAL_SECONDS,
+                'now' => time(),
+                'initial' => $this->getState(),
+                'i18n' => [
+                    'starting' => (string) __('Starting…'),
+                    'startSession' => (string) __('Start session'),
+                    'stopping' => (string) __('Stopping…'),
+                    'stopNow' => (string) __('Stop now'),
+                    'copied' => (string) __('Copied'),
+                    'sessionEnded' => (string) __('Debug session ended. Paypercut stops receiving data from this store.'),
+                    'networkError' => (string) __('The request could not be completed. Please try again.'),
+                    'adminUnreachable' => (string) __('This page cannot reach the store admin any more. Reload the page to see the current state.'),
+                ],
+            ])
+        );
     }
 
     /**
