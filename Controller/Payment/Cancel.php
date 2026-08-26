@@ -7,6 +7,8 @@ use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
 use Magento\Framework\Message\ManagerInterface;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -41,24 +43,32 @@ class Cancel implements HttpGetActionInterface
     private $logger;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param RedirectFactory $redirectFactory
      * @param CheckoutSession $checkoutSession
      * @param OrderRepositoryInterface $orderRepository
      * @param ManagerInterface $messageManager
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         RedirectFactory $redirectFactory,
         CheckoutSession $checkoutSession,
         OrderRepositoryInterface $orderRepository,
         ManagerInterface $messageManager,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->redirectFactory = $redirectFactory;
         $this->checkoutSession = $checkoutSession;
         $this->orderRepository = $orderRepository;
         $this->messageManager = $messageManager;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -74,11 +84,35 @@ class Cancel implements HttpGetActionInterface
             $order = $this->checkoutSession->getLastRealOrder();
 
             if ($order->getId()) {
+                $fromStatus = (string) $order->getStatus();
+                $cancelled = false;
+
                 // Cancel the order
                 if ($order->canCancel()) {
                     $order->cancel();
                     $order->addCommentToStatusHistory(__('Payment cancelled by customer.'));
                     $this->orderRepository->save($order);
+                    $cancelled = true;
+                }
+
+                $orderRef = (string) $order->getIncrementId();
+
+                $this->recorder->record(
+                    Event::of('checkout.return.cancelled', [
+                        'order_status' => $fromStatus,
+                        'order_updated' => $cancelled
+                    ])->about(['order_ref' => $orderRef])
+                );
+
+                if ($cancelled) {
+                    $this->recorder->record(
+                        Event::of('order.marked_failed', [
+                            'source' => 'cancel_return',
+                            'payment_status' => 'cancelled',
+                            'from_status' => $fromStatus,
+                            'to_status' => (string) $order->getStatus()
+                        ])->about(['order_ref' => $orderRef])
+                    );
                 }
 
                 // Restore quote

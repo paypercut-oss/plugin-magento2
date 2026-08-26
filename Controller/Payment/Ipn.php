@@ -22,6 +22,8 @@ use Paypercut\Payment\Model\PaypercutOrderHelper;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
 use Paypercut\Payment\Model\Adminhtml\Source\RefundAction;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -108,6 +110,11 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
     private $encryptor;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param RequestInterface $request
      * @param JsonFactory $jsonFactory
      * @param OrderRepositoryInterface $orderRepository
@@ -123,6 +130,7 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
      * @param LoggerInterface $logger
      * @param PaypercutOrderHelper $orderHelper
      * @param EncryptorInterface $encryptor
+     * @param EventRecorder $recorder
      */
     public function __construct(
         RequestInterface $request,
@@ -139,7 +147,8 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         ScopeConfigInterface $scopeConfig,
         LoggerInterface $logger,
         PaypercutOrderHelper $orderHelper,
-        EncryptorInterface $encryptor
+        EncryptorInterface $encryptor,
+        EventRecorder $recorder
     ) {
         $this->request = $request;
         $this->jsonFactory = $jsonFactory;
@@ -156,6 +165,7 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         $this->logger = $logger;
         $this->orderHelper = $orderHelper;
         $this->encryptor = $encryptor;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -170,8 +180,17 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         try {
             $rawBody = $this->request->getContent();
 
-            if (!$this->validateIpn($rawBody)) {
-                throw new \Exception('Invalid IPN signature');
+            $rejection = $this->validateIpn($rawBody);
+
+            if ($rejection !== '') {
+                $this->reject($rejection['code'], $rejection['attrs']);
+
+                $result->setHttpResponseCode(400);
+
+                return $result->setData([
+                    'success' => false,
+                    'message' => 'Invalid IPN signature'
+                ]);
             }
 
             $webhookData = json_decode($rawBody, true);
@@ -183,8 +202,21 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
             $eventData = $webhookData['data']['object'] ?? null;
 
             if (!$eventType || !$eventData) {
-                throw new \Exception('Missing event type or data');
+                $this->recorder->record(
+                    Event::failure('webhook.payload_invalid', 'empty_or_unparsable')
+                );
+
+                $result->setHttpResponseCode(400);
+
+                return $result->setData([
+                    'success' => false,
+                    'message' => 'Missing event type or data'
+                ]);
             }
+
+            $this->recorder->record(
+                Event::of('webhook.received', ['type' => Event::identifier((string) $eventType)])
+            );
 
             $this->logger->info('Paypercut: Processing webhook event', [
                 'event_type' => $eventType,
@@ -207,6 +239,12 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                         'payment_intent_id' => $eventData['id'] ?? null
                     ]);
                     // Don't process yet - wait for captured event
+                    $this->recorder->record(
+                        Event::of('webhook.skipped', [
+                            'webhook' => 'payment_intent.authorized',
+                            'reason' => 'awaiting_capture'
+                        ])->about(['payment_intent_id' => (string) ($eventData['id'] ?? '')])
+                    );
                     break;
                     
                 case 'payment_intent.payment_failed':
@@ -222,6 +260,12 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                     $this->logger->info('Paypercut: Unhandled webhook event type', [
                         'event_type' => $eventType
                     ]);
+                    $this->recorder->record(
+                        Event::of('webhook.skipped', [
+                            'webhook' => Event::identifier((string) $eventType),
+                            'reason' => 'unhandled_type'
+                        ])
+                    );
                     break;
             }
 
@@ -234,7 +278,11 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
             $this->logger->error('Paypercut IPN error: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString()
             ]);
-            
+
+            $this->recorder->record(
+                Event::failure('webhook.error', 'http_400', ['http_status' => 400], $e)
+            );
+
             $result->setHttpResponseCode(400);
             $result->setData([
                 'success' => false,
@@ -257,6 +305,11 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         
         if (!$checkoutId) {
             $this->logger->error('Paypercut: Missing checkout ID in webhook');
+            $this->recorder->record(
+                Event::failure('webhook.payload_invalid', 'missing_checkout_id', [
+                    'webhook' => 'checkout_session.completed'
+                ])
+            );
             return;
         }
 
@@ -267,6 +320,7 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
             $this->logger->warning('Paypercut: Order not found for checkout', [
                 'checkout_id' => $checkoutId
             ]);
+            $this->unresolved('checkout_session.completed', (string) $checkoutId, $checkoutData);
             return;
         }
 
@@ -275,6 +329,17 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
             'checkout_id' => $checkoutId,
             'payment_status' => $checkoutData['payment_status'] ?? null
         ]);
+
+        $this->recorder->record(
+            Event::of('webhook.order_updated', [
+                'webhook' => 'checkout_session.completed',
+                'payment_status' => Event::identifier((string) ($checkoutData['payment_status'] ?? '')),
+                'order_status' => (string) $order->getStatus()
+            ])->about([
+                'order_ref' => (string) $order->getIncrementId(),
+                'payment_id' => (string) $checkoutId
+            ])
+        );
 
         // Checkout completed - payment processing will be handled by payment_intent.captured event
     }
@@ -291,6 +356,11 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         
         if (!$paymentIntentId) {
             $this->logger->error('Paypercut: Missing payment intent ID in webhook');
+            $this->recorder->record(
+                Event::failure('webhook.payload_invalid', 'missing_payment_intent', [
+                    'webhook' => 'payment_intent.succeeded'
+                ])
+            );
             return;
         }
 
@@ -301,11 +371,13 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
             $this->logger->warning('Paypercut: Order not found for payment intent', [
                 'payment_intent_id' => $paymentIntentId
             ]);
+            $this->unresolved('payment_intent.succeeded', (string) $paymentIntentId, $paymentIntentData);
             return;
         }
 
         $payment = $order->getPayment();
         $transactionId = $paymentIntentId;
+        $fromStatus = (string) $order->getStatus();
         
         $this->logger->info('Paypercut: Payment captured', [
             'order_id' => $order->getIncrementId(),
@@ -349,25 +421,72 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         $this->createSubscriptions($order);
 
         // Create invoice if possible
-        if ($order->canInvoice()) {
-            $invoice = $this->invoiceService->prepareInvoice($order);
-            $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE);
-            $invoice->register();
+        try {
+            if ($order->canInvoice()) {
+                $invoice = $this->invoiceService->prepareInvoice($order);
+                $invoice->setRequestedCaptureCase(\Magento\Sales\Model\Order\Invoice::CAPTURE_ONLINE);
+                $invoice->register();
 
-            $transactionSave = $this->transactionFactory->create();
-            $transactionSave->addObject($invoice)
-                ->addObject($order)
-                ->save();
+                $transactionSave = $this->transactionFactory->create();
+                $transactionSave->addObject($invoice)
+                    ->addObject($order)
+                    ->save();
+            } else {
+                $this->recorder->record(
+                    Event::of('order.confirmation_skipped', [
+                        'reason' => 'status_not_payable',
+                        'source' => 'webhook',
+                        'order_status' => $fromStatus,
+                        'after_lock' => false
+                    ])->about(['order_ref' => (string) $order->getIncrementId()])
+                );
+            }
+
+            $order->setState(Order::STATE_PROCESSING)
+                ->setStatus(Order::STATE_PROCESSING);
+
+            $order->addCommentToStatusHistory(
+                __('Payment confirmed via Paypercut. Transaction ID: %1', $transactionId)
+            );
+
+            $this->orderRepository->save($order);
+        } catch (\Exception $e) {
+            $this->recorder->record(
+                Event::failure('order.confirmation_refused', 'payment_complete_refused', [
+                    'source' => 'webhook',
+                    'order_status' => $fromStatus,
+                    'target_status' => Order::STATE_PROCESSING
+                ], $e)->about([
+                    'order_ref' => (string) $order->getIncrementId(),
+                    'payment_intent_id' => (string) $paymentIntentId
+                ])
+            );
+
+            throw $e;
         }
 
-        $order->setState(Order::STATE_PROCESSING)
-            ->setStatus(Order::STATE_PROCESSING);
-        
-        $order->addCommentToStatusHistory(
-            __('Payment confirmed via Paypercut. Transaction ID: %1', $transactionId)
+        $correlation = [
+            'order_ref' => (string) $order->getIncrementId(),
+            'payment_intent_id' => (string) $paymentIntentId,
+            'payment_id' => (string) ($paymentIntentData['latest_charge'] ?? '')
+        ];
+
+        $this->recorder->record(
+            Event::of('payment.succeeded', [
+                'source' => 'webhook',
+                'order_status' => (string) $order->getStatus(),
+                'order_updated' => $fromStatus !== (string) $order->getStatus()
+            ])->about($correlation)
         );
-        
-        $this->orderRepository->save($order);
+
+        $this->recorder->record(
+            Event::of('order.marked_paid', [
+                'source' => 'webhook',
+                'from_status' => $fromStatus,
+                'to_status' => (string) $order->getStatus(),
+                'target_status' => Order::STATE_PROCESSING
+            ])->about($correlation)
+        );
     }
 
     /**
@@ -381,12 +500,18 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         $paymentIntentId = $paymentIntentData['id'] ?? null;
         
         if (!$paymentIntentId) {
+            $this->recorder->record(
+                Event::failure('webhook.payload_invalid', 'missing_payment_intent', [
+                    'webhook' => 'payment_intent.payment_failed'
+                ])
+            );
             return;
         }
 
         $order = $this->getOrderByPaymentIntentId($paymentIntentId);
         
         if (!$order) {
+            $this->unresolved('payment_intent.payment_failed', (string) $paymentIntentId, $paymentIntentData);
             return;
         }
 
@@ -395,10 +520,39 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
             'payment_intent_id' => $paymentIntentId
         ]);
 
+        $fromStatus = (string) $order->getStatus();
+
         $order->cancel();
         $order->addCommentToStatusHistory(__('Payment failed via Paypercut gateway.'));
         
         $this->orderRepository->save($order);
+
+        $correlation = [
+            'order_ref' => (string) $order->getIncrementId(),
+            'payment_intent_id' => (string) $paymentIntentId
+        ];
+
+        $this->recorder->record(
+            Event::failure(
+                'payment.failed',
+                Event::identifier((string) ($paymentIntentData['status'] ?? '')) ?: 'unknown',
+                [
+                    'source' => 'webhook',
+                    'payment_status' => Event::identifier((string) ($paymentIntentData['status'] ?? '')),
+                    'order_status' => (string) $order->getStatus(),
+                    'order_updated' => $fromStatus !== (string) $order->getStatus()
+                ]
+            )->about($correlation)
+        );
+
+        $this->recorder->record(
+            Event::of('order.marked_failed', [
+                'source' => 'webhook',
+                'payment_status' => Event::identifier((string) ($paymentIntentData['status'] ?? '')),
+                'from_status' => $fromStatus,
+                'to_status' => (string) $order->getStatus()
+            ])->about($correlation)
+        );
     }
 
     /**
@@ -415,6 +569,13 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         
         if (!$refundId || !$paymentIntentId) {
             $this->logger->error('Paypercut: Missing refund ID or payment intent ID in webhook');
+            $this->recorder->record(
+                Event::failure('webhook.payload_invalid', 'missing_refund_identifiers', [
+                    'webhook' => 'refund.created',
+                    'has_refund_id' => $refundId !== null,
+                    'has_payment_intent_id' => $paymentIntentId !== null
+                ])
+            );
             return;
         }
 
@@ -426,6 +587,7 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                 'refund_id' => $refundId,
                 'payment_intent_id' => $paymentIntentId
             ]);
+            $this->unresolved('refund.created', (string) $paymentIntentId, $refundData);
             return;
         }
 
@@ -442,6 +604,12 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                 'refund_action' => $refundAction,
                 'refund_id' => $refundId
             ]);
+            $this->recorder->record(
+                Event::of('webhook.skipped', [
+                    'webhook' => 'refund.created',
+                    'reason' => 'refund_action_disabled'
+                ])->about(['order_ref' => (string) $order->getIncrementId()])
+            );
             return;
         }
 
@@ -459,6 +627,15 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                     'order_state' => $order->getState(),
                     'order_status' => $order->getStatus()
                 ]);
+                $this->recorder->record(
+                    Event::failure('refund.rejected', 'order_not_refundable', [
+                        'source' => 'webhook',
+                        'order_status' => (string) $order->getStatus()
+                    ])->about([
+                        'order_ref' => (string) $order->getIncrementId(),
+                        'payment_intent_id' => (string) $paymentIntentId
+                    ])
+                );
                 return;
             }
 
@@ -474,6 +651,12 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                     'order_id' => $order->getIncrementId(),
                     'refund_id' => $refundId
                 ]);
+                $this->recorder->record(
+                    Event::of('webhook.skipped', [
+                        'webhook' => 'refund.created',
+                        'reason' => 'duplicate_refund'
+                    ])->about(['order_ref' => (string) $order->getIncrementId()])
+                );
                 return;
             }
 
@@ -525,6 +708,19 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                 'amount' => $refundAmountInOrderCurrency
             ]);
 
+            // Amounts never travel; whether this was a partial refund does.
+            $this->recorder->record(
+                Event::of('refund.succeeded', [
+                    'source' => 'webhook',
+                    'is_partial' => abs($refundAmountInOrderCurrency - $order->getGrandTotal()) > 0.01,
+                    'has_reason' => !empty($refundData['reason']),
+                    'has_refund_id' => true
+                ])->about([
+                    'order_ref' => (string) $order->getIncrementId(),
+                    'payment_intent_id' => (string) $paymentIntentId
+                ])
+            );
+
         } catch (\Exception $e) {
             $this->logger->error('Paypercut: Failed to create credit memo from refund', [
                 'order_id' => $order->getIncrementId(),
@@ -532,6 +728,16 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
+
+            $this->recorder->record(
+                Event::failure('refund.failed', 'credit_memo_failed', [
+                    'source' => 'webhook',
+                    'has_reason' => !empty($refundData['reason'])
+                ], $e)->about([
+                    'order_ref' => (string) $order->getIncrementId(),
+                    'payment_intent_id' => (string) $paymentIntentId
+                ])
+            );
         }
     }
 
@@ -583,13 +789,51 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
                     'order_id' => $order->getEntityId(),
                     'subscription_ids' => $subscriptionIds
                 ]);
+
+                $this->recorder->record(
+                    Event::of('subscription.created', [
+                        'source' => 'webhook',
+                        'count' => count($subscriptionIds),
+                        'has_payment_method' => !empty($paymentMethodId)
+                    ])->about(['order_ref' => (string) $order->getIncrementId()])
+                );
             }
         } catch (\Exception $e) {
             $this->logger->error('Paypercut: Failed to create subscriptions from IPN', [
                 'order_id' => $order->getEntityId(),
                 'error' => $e->getMessage()
             ]);
+
+            $this->recorder->record(
+                Event::failure('subscription.create_failed', 'create_failed', [
+                    'source' => 'webhook'
+                ], $e)->about(['order_ref' => (string) $order->getIncrementId()])
+            );
         }
+    }
+
+    /**
+     * Report a delivery that matched no order on this store.
+     *
+     * Presence flags only: whichever identifier Paypercut sent is the one the
+     * lookup used, and knowing which were present is what distinguishes "the
+     * order was deleted" from "the reference never made it onto the payment".
+     *
+     * @param string $webhook
+     * @param string $paypercutId
+     * @param array $payload
+     * @return void
+     */
+    private function unresolved(string $webhook, string $paypercutId, array $payload): void
+    {
+        $this->recorder->record(
+            Event::failure('webhook.unresolved', 'order_not_found', [
+                'webhook' => $webhook,
+                'http_status' => 200,
+                'has_client_reference_id' => !empty($payload['client_reference_id']),
+                'has_metadata' => !empty($payload['metadata'])
+            ])->about(['payment_id' => $paypercutId])
+        );
     }
 
     /**
@@ -648,9 +892,9 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
      * Signed payload: "<timestamp>.<raw_body>"
      *
      * @param string $rawBody
-     * @return bool
+     * @return array Empty when the delivery is accepted, otherwise the rejection reason.
      */
-    private function validateIpn(string $rawBody): bool
+    private function validateIpn(string $rawBody): array
     {
         $encryptedWebhookSecret = (string) $this->scopeConfig->getValue(
             self::CONFIG_PATH_WEBHOOK_SECRET,
@@ -663,20 +907,36 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
 
         if (empty($webhookSecret)) {
             $this->logger->warning('Paypercut IPN: No webhook secret configured, skipping signature validation');
-            return true;
+
+            // Not a rejection: this store accepts unsigned deliveries. Still
+            // worth reporting — an unverifiable webhook is exactly the state a
+            // merchant with stuck orders is usually in.
+            $this->recorder->record(
+                Event::of('webhook.skipped', [
+                    'webhook' => 'signature',
+                    'reason' => 'webhook_secret_not_configured'
+                ])
+            );
+
+            return [];
+        }
+
+        if ($rawBody === '') {
+            $this->logger->error('Paypercut IPN: Empty request body');
+            return ['code' => 'empty_body', 'attrs' => []];
         }
 
         $signatureHeader = $this->request->getHeader('Paypercut-Signature');
         if (!$signatureHeader) {
             $this->logger->error('Paypercut IPN: Missing Paypercut-Signature header');
-            return false;
+            return ['code' => 'missing_signature', 'attrs' => []];
         }
 
         // Parse header: "t=<timestamp>,v1=<hex_signature>"
         $parts = explode(',', $signatureHeader);
         if (count($parts) < 2) {
             $this->logger->error('Paypercut IPN: Invalid signature header format');
-            return false;
+            return ['code' => 'invalid_signature_format', 'attrs' => []];
         }
 
         $timestampPart = explode('=', $parts[0], 2);
@@ -686,20 +946,23 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
             || $timestampPart[0] !== 't' || $signaturePart[0] !== 'v1'
         ) {
             $this->logger->error('Paypercut IPN: Invalid signature header components');
-            return false;
+            return ['code' => 'invalid_signature_structure', 'attrs' => []];
         }
 
         $timestamp = (int) $timestampPart[1];
         $receivedSignature = $signaturePart[1];
 
         // Check timestamp tolerance (5 minutes)
-        $timeDifference = abs(time() - $timestamp);
-        if ($timeDifference > 300) {
+        $skewSeconds = time() - $timestamp;
+        if (abs($skewSeconds) > 300) {
             $this->logger->error('Paypercut IPN: Signature timestamp too old', [
                 'timestamp' => $timestamp,
-                'difference' => $timeDifference
+                'difference' => abs($skewSeconds)
             ]);
-            return false;
+            return [
+                'code' => 'timestamp_out_of_tolerance',
+                'attrs' => ['skew_seconds' => $skewSeconds]
+            ];
         }
 
         // Compute expected signature: HMAC-SHA256 of "<timestamp>.<raw_body>"
@@ -709,10 +972,29 @@ class Ipn implements HttpPostActionInterface, CsrfAwareActionInterface
         // Constant-time comparison
         if (!hash_equals($expectedSignature, $receivedSignature)) {
             $this->logger->error('Paypercut IPN: Signature mismatch');
-            return false;
+            return ['code' => 'invalid_signature', 'attrs' => []];
         }
 
-        return true;
+        return [];
+    }
+
+    /**
+     * Report a refused delivery.
+     *
+     * The single most useful event a debug session carries: a merchant whose
+     * orders never leave "pending" is almost always looking at one of these —
+     * a rotated webhook secret, a clock out of tolerance, or a signature that
+     * never matched. None of it is visible from Paypercut's side.
+     *
+     * @param string $code
+     * @param array $attrs
+     * @return void
+     */
+    private function reject(string $code, array $attrs = []): void
+    {
+        $this->recorder->record(
+            Event::failure('webhook.rejected', $code, array_merge($attrs, ['http_status' => 400]))
+        );
     }
 
     /**

@@ -7,6 +7,8 @@ use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollection
 use Magento\Sales\Model\Service\InvoiceService;
 use Magento\Framework\DB\TransactionFactory;
 use Paypercut\Payment\Model\Api\Client as PaypercutClient;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -27,6 +29,9 @@ class BnplStatusCheck
 
     /** Maximum age of orders to check (hours) */
     const MAX_ORDER_AGE_HOURS = 48;
+
+    /** Where a reported outcome came from. The poller also runs on return. */
+    const SOURCE = 'bnpl_poll';
 
     /**
      * @var OrderCollectionFactory
@@ -59,12 +64,18 @@ class BnplStatusCheck
     private $logger;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param OrderCollectionFactory $orderCollectionFactory
      * @param OrderRepositoryInterface $orderRepository
      * @param InvoiceService $invoiceService
      * @param TransactionFactory $transactionFactory
      * @param PaypercutClient $apiClient
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         OrderCollectionFactory $orderCollectionFactory,
@@ -72,7 +83,8 @@ class BnplStatusCheck
         InvoiceService $invoiceService,
         TransactionFactory $transactionFactory,
         PaypercutClient $apiClient,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->orderCollectionFactory = $orderCollectionFactory;
         $this->orderRepository = $orderRepository;
@@ -80,6 +92,7 @@ class BnplStatusCheck
         $this->transactionFactory = $transactionFactory;
         $this->apiClient = $apiClient;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -121,6 +134,12 @@ class BnplStatusCheck
             $this->logger->warning('Paypercut: BNPL order missing attempt_id', [
                 'order_id' => $order->getIncrementId()
             ]);
+            $this->recorder->record(
+                Event::failure('payment.status_unverifiable', 'no_attempt_id', [
+                    'source' => self::SOURCE,
+                    'order_status' => (string) $order->getStatus()
+                ])->about(['order_ref' => (string) $order->getIncrementId()])
+            );
             return;
         }
 
@@ -174,6 +193,16 @@ class BnplStatusCheck
                 'attempt_id' => $attemptId,
                 'error' => $e->getMessage()
             ]);
+
+            $this->recorder->record(
+                Event::failure('payment.status_unverifiable', 'lookup_failed', [
+                    'source' => self::SOURCE,
+                    'order_status' => (string) $order->getStatus()
+                ], $e)->about([
+                    'order_ref' => (string) $order->getIncrementId(),
+                    'payment_id' => (string) $attemptId
+                ])
+            );
         }
     }
 
@@ -189,6 +218,7 @@ class BnplStatusCheck
         $payment = $order->getPayment();
         $attemptId = $attemptData['attempt_id'] ?? '';
         $purchaseId = $attemptData['purchase_id'] ?? '';
+        $fromStatus = (string) $order->getStatus();
 
         // Use purchase_id as transaction ID, fallback to attempt_id
         $transactionId = $purchaseId ?: $attemptId;
@@ -227,6 +257,28 @@ class BnplStatusCheck
             'purchase_id' => $purchaseId,
             'provider' => $providerName
         ]);
+
+        $correlation = [
+            'order_ref' => (string) $order->getIncrementId(),
+            'payment_id' => (string) $transactionId
+        ];
+
+        $this->recorder->record(
+            Event::of('payment.succeeded', [
+                'source' => self::SOURCE,
+                'order_status' => (string) $order->getStatus(),
+                'order_updated' => $fromStatus !== (string) $order->getStatus()
+            ])->about($correlation)
+        );
+
+        $this->recorder->record(
+            Event::of('order.marked_paid', [
+                'source' => self::SOURCE,
+                'from_status' => $fromStatus,
+                'to_status' => (string) $order->getStatus(),
+                'target_status' => Order::STATE_PROCESSING
+            ])->about($correlation)
+        );
     }
 
     /**
@@ -244,6 +296,7 @@ class BnplStatusCheck
         $providerName = $attemptData['provider_name'] ?? 'BNPL';
 
         $statusLabel = str_replace('ATTEMPT_STATUS_', '', $status);
+        $fromStatus = (string) $order->getStatus();
 
         $order->cancel();
         $order->addCommentToStatusHistory(
@@ -262,6 +315,32 @@ class BnplStatusCheck
             'status' => $status,
             'reason' => $statusReason
         ]);
+
+        // The provider's own status_reason is upstream free text and does not
+        // travel; the status identifier carries the diagnosis.
+        $correlation = [
+            'order_ref' => (string) $order->getIncrementId(),
+            'payment_id' => (string) ($attemptData['attempt_id'] ?? '')
+        ];
+
+        $this->recorder->record(
+            Event::failure('payment.failed', Event::identifier($status) ?: 'unknown', [
+                'source' => self::SOURCE,
+                'payment_status' => Event::identifier($status),
+                'order_status' => (string) $order->getStatus(),
+                'order_updated' => $fromStatus !== (string) $order->getStatus(),
+                'has_status_reason' => $statusReason !== ''
+            ])->about($correlation)
+        );
+
+        $this->recorder->record(
+            Event::of('order.marked_failed', [
+                'source' => self::SOURCE,
+                'payment_status' => Event::identifier($status),
+                'from_status' => $fromStatus,
+                'to_status' => (string) $order->getStatus()
+            ])->about($correlation)
+        );
     }
 
     /**

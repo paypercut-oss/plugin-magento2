@@ -8,6 +8,8 @@ use Magento\Framework\Event\ObserverInterface;
 use Magento\Sales\Api\Data\OrderInterface;
 use Paypercut\Payment\Api\SubscriptionManagementInterface;
 use Paypercut\Payment\Model\PaypercutOrderHelper;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Paypercut\Payment\Model\Ui\ConfigProvider;
 use Psr\Log\LoggerInterface;
 
@@ -32,18 +34,26 @@ class CreateSubscriptionAfterOrderPlace implements ObserverInterface
     private $logger;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param SubscriptionManagementInterface $subscriptionManager
      * @param PaypercutOrderHelper $orderHelper
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         SubscriptionManagementInterface $subscriptionManager,
         PaypercutOrderHelper $orderHelper,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->subscriptionManager = $subscriptionManager;
         $this->orderHelper = $orderHelper;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -120,6 +130,14 @@ class CreateSubscriptionAfterOrderPlace implements ObserverInterface
                     'order_id' => $order->getEntityId(),
                     'subscription_ids' => $subscriptionIds
                 ]);
+
+                $this->recorder->record(
+                    Event::of('subscription.created', [
+                        'source' => 'order_placed',
+                        'count' => count($subscriptionIds),
+                        'has_payment_method' => !empty($paymentMethodId)
+                    ])->about(['order_ref' => (string) $order->getIncrementId()])
+                );
             }
         } catch (\Exception $e) {
             // Log error but don't fail the order
@@ -127,6 +145,12 @@ class CreateSubscriptionAfterOrderPlace implements ObserverInterface
                 'order_id' => $order->getEntityId(),
                 'error' => $e->getMessage()
             ]);
+
+            $this->recorder->record(
+                Event::failure('subscription.create_failed', 'create_failed', [
+                    'source' => 'order_placed'
+                ], $e)->about(['order_ref' => (string) $order->getIncrementId()])
+            );
         }
     }
 }

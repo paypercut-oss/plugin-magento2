@@ -9,6 +9,8 @@ use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
 use Paypercut\Payment\Cron\BnplStatusCheck;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -53,6 +55,11 @@ class Success implements HttpGetActionInterface
     private $logger;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param RequestInterface $request
      * @param RedirectFactory $redirectFactory
      * @param PageFactory $pageFactory
@@ -60,6 +67,7 @@ class Success implements HttpGetActionInterface
      * @param OrderRepositoryInterface $orderRepository
      * @param BnplStatusCheck $bnplStatusCheck
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         RequestInterface $request,
@@ -68,7 +76,8 @@ class Success implements HttpGetActionInterface
         CheckoutSession $checkoutSession,
         OrderRepositoryInterface $orderRepository,
         BnplStatusCheck $bnplStatusCheck,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->request = $request;
         $this->redirectFactory = $redirectFactory;
@@ -77,6 +86,7 @@ class Success implements HttpGetActionInterface
         $this->orderRepository = $orderRepository;
         $this->bnplStatusCheck = $bnplStatusCheck;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -99,15 +109,44 @@ class Success implements HttpGetActionInterface
 
             // For BNPL orders, check status immediately on return
             $order = $this->checkoutSession->getLastRealOrder();
-            if ($order && $order->getId()) {
+
+            if (!$order || !$order->getId()) {
+                $this->recorder->record(
+                    Event::failure('checkout.return.unverifiable', 'no_order_context')
+                );
+            } else {
                 $payment = $order->getPayment();
-                if ($payment && $payment->getMethod() === 'paypercut_bnpl'
-                    && $order->getState() === Order::STATE_PENDING_PAYMENT
-                ) {
+                $method = $payment ? (string) $payment->getMethod() : '';
+
+                if ($method === 'paypercut_bnpl' && $order->getState() === Order::STATE_PENDING_PAYMENT) {
                     $this->logger->info('Paypercut: Checking BNPL status on success return', [
                         'order_id' => $order->getIncrementId()
                     ]);
-                    $this->bnplStatusCheck->checkOrderStatus($order);
+
+                    try {
+                        $this->bnplStatusCheck->checkOrderStatus($order);
+                    } catch (\Exception $e) {
+                        $this->recorder->record(
+                            Event::failure('checkout.return.unverifiable', 'lookup_failed', [
+                                'method' => $method,
+                                'order_status' => (string) $order->getStatus()
+                            ], $e)->about(['order_ref' => (string) $order->getIncrementId()])
+                        );
+                    }
+                }
+
+                // The shopper is back but nothing has confirmed the payment
+                // yet: the webhook or the BNPL poller still owns the outcome.
+                if ($order->getState() === Order::STATE_PENDING_PAYMENT) {
+                    $this->recorder->record(
+                        Event::of('checkout.return.pending', [
+                            'method' => $method,
+                            'order_status' => (string) $order->getStatus()
+                        ])->about([
+                            'order_ref' => (string) $order->getIncrementId(),
+                            'payment_id' => (string) ($payment ? $payment->getAdditionalInformation('paypercut_id') : '')
+                        ])
+                    );
                 }
             }
 

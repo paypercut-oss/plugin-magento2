@@ -10,6 +10,9 @@ use Magento\Framework\UrlInterface;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
 use Paypercut\Payment\Model\Api\Client as PaypercutClient;
+use Paypercut\Payment\Model\Api\PaypercutApiException;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -19,6 +22,11 @@ use Psr\Log\LoggerInterface;
 class Redirect implements HttpGetActionInterface
 {
     private const PLUGIN_VERSION = '1.1.3';
+
+    /**
+     * Which of the two hosted-checkout entry points this store used.
+     */
+    private const SOURCE = 'redirect_controller';
 
     /**
      * @var RedirectFactory
@@ -61,6 +69,11 @@ class Redirect implements HttpGetActionInterface
     private $logger;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param RedirectFactory $redirectFactory
      * @param CheckoutSession $checkoutSession
      * @param OrderRepositoryInterface $orderRepository
@@ -69,6 +82,7 @@ class Redirect implements HttpGetActionInterface
      * @param ScopeConfigInterface $scopeConfig
      * @param ProductMetadataInterface $productMetadata
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         RedirectFactory $redirectFactory,
@@ -78,7 +92,8 @@ class Redirect implements HttpGetActionInterface
         UrlInterface $urlBuilder,
         ScopeConfigInterface $scopeConfig,
         ProductMetadataInterface $productMetadata,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->redirectFactory = $redirectFactory;
         $this->checkoutSession = $checkoutSession;
@@ -88,6 +103,7 @@ class Redirect implements HttpGetActionInterface
         $this->scopeConfig = $scopeConfig;
         $this->productMetadata = $productMetadata;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -106,6 +122,9 @@ class Redirect implements HttpGetActionInterface
             
             if (!$order || !$order->getId()) {
                 $this->logger->error('Paypercut: Order not found in session');
+                $this->recorder->record(
+                    Event::failure('checkout.order_missing', 'order_not_found', ['source' => self::SOURCE])
+                );
                 throw new \Exception('Order not found');
             }
 
@@ -120,20 +139,31 @@ class Redirect implements HttpGetActionInterface
             ]);
 
             // Check if this is BNPL or standard card payment
-            if ($paymentMethod === 'paypercut_bnpl') {
-                $response = $this->processBnplPayment($order, $payment);
-                // BNPL returns 'redirect_url' and 'attempt_id'
-                $redirectUrl = $response['redirect_url'] ?? null;
-                $paypercutId = $response['attempt_id'] ?? null;
-            } else {
-                $response = $this->processCardPayment($order, $payment);
-                // Standard checkout returns 'url' and 'id'
-                $redirectUrl = $response['url'] ?? null;
-                $paypercutId = $response['id'] ?? null;
+            try {
+                if ($paymentMethod === 'paypercut_bnpl') {
+                    $response = $this->processBnplPayment($order, $payment);
+                    // BNPL returns 'redirect_url' and 'attempt_id'
+                    $redirectUrl = $response['redirect_url'] ?? null;
+                    $paypercutId = $response['attempt_id'] ?? null;
+                } else {
+                    $response = $this->processCardPayment($order, $payment);
+                    // Standard checkout returns 'url' and 'id'
+                    $redirectUrl = $response['url'] ?? null;
+                    $paypercutId = $response['id'] ?? null;
+                }
+            } catch (\Exception $e) {
+                $this->recordCreateFailed($e, $paymentMethod, $order->getIncrementId());
+                throw $e;
             }
 
             if (!$redirectUrl) {
                 $this->logger->error('Paypercut: Missing URL in response', ['response' => $response]);
+                $this->recorder->record(
+                    Event::failure('checkout.hosted.redirect_missing', 'redirect_absent', [
+                        'source' => self::SOURCE,
+                        'method' => $paymentMethod
+                    ])->about(['order_ref' => $order->getIncrementId()])
+                );
                 throw new \Exception('Invalid response from Paypercut API: missing redirect URL');
             }
 
@@ -161,6 +191,18 @@ class Redirect implements HttpGetActionInterface
                 'redirect_url' => $redirectUrl
             ]);
 
+            $this->recorder->record(
+                Event::of('checkout.hosted.redirected', [
+                    'source' => self::SOURCE,
+                    'method' => $paymentMethod,
+                    'order_status' => (string) $order->getStatus()
+                ])->about([
+                    'order_ref' => $order->getIncrementId(),
+                    'payment_id' => (string) $paypercutId,
+                    'payment_intent_id' => (string) ($response['payment_intent'] ?? '')
+                ])
+            );
+
             // Redirect to Paypercut
             $redirect->setUrl($redirectUrl);
 
@@ -177,6 +219,28 @@ class Redirect implements HttpGetActionInterface
         }
 
         return $redirect;
+    }
+
+    /**
+     * Report a checkout session that could not be created.
+     *
+     * @param \Exception $exception
+     * @param string $paymentMethod
+     * @param string $orderRef
+     * @return void
+     */
+    private function recordCreateFailed(\Exception $exception, string $paymentMethod, string $orderRef): void
+    {
+        $attrs = [
+            'source' => self::SOURCE,
+            'method' => $paymentMethod
+        ];
+
+        $event = $exception instanceof PaypercutApiException
+            ? Event::apiFailure('checkout.hosted.create_failed', $exception, $attrs)
+            : Event::failure('checkout.hosted.create_failed', 'session_create', $attrs, $exception);
+
+        $this->recorder->record($event->about(['order_ref' => $orderRef]));
     }
 
     /**
