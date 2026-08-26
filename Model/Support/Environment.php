@@ -21,6 +21,16 @@ class Environment
     const STAGE = 'stage';
     const PRODUCTION = 'production';
 
+    /**
+     * The value stores connected before this setting was reworked still hold.
+     *
+     * Sandbox and production always resolved to the same payment API host, so
+     * it is production under an older name — named here rather than left to
+     * fall through, so those stores keep one coherent pair of hosts instead of
+     * a production payment API and no telemetry at all.
+     */
+    const LEGACY_SANDBOX = 'sandbox';
+
     const CONFIG_PATH_ENVIRONMENT = 'payment/paypercut_card/environment';
 
     const DEFAULT_API_BASE_URI = 'https://api.paypercut.io/';
@@ -63,20 +73,29 @@ class Environment
     /**
      * The stored environment, or '' when it is unset or not one we know.
      *
-     * Stores connected before this setting existed hold the legacy `sandbox`
-     * value, which lands here as '' — production hosts for the payment API,
-     * no telemetry session at all.
-     *
      * @param int|null $storeId
      * @return string
      */
     public function getEnvironment($storeId = null): string
     {
-        $environment = (string) $this->scopeConfig->getValue(
+        return self::normalise((string) $this->scopeConfig->getValue(
             self::CONFIG_PATH_ENVIRONMENT,
             ScopeInterface::SCOPE_STORE,
             $storeId
-        );
+        ));
+    }
+
+    /**
+     * Resolve a stored value to one of the environments this module knows.
+     *
+     * @param string $environment
+     * @return string
+     */
+    public static function normalise(string $environment): string
+    {
+        if ($environment === self::LEGACY_SANDBOX) {
+            return self::PRODUCTION;
+        }
 
         return isset(self::API_BASE_URIS[$environment]) ? $environment : '';
     }
@@ -103,7 +122,7 @@ class Environment
      */
     public static function apiBaseUriFor(string $environment): string
     {
-        $base = self::API_BASE_URIS[$environment] ?? self::DEFAULT_API_BASE_URI;
+        $base = self::API_BASE_URIS[self::normalise($environment)] ?? self::DEFAULT_API_BASE_URI;
 
         return self::allowedPaypercutBase($base) ?: self::DEFAULT_API_BASE_URI;
     }
@@ -130,6 +149,8 @@ class Environment
      */
     public static function telemetryBaseUriFor(string $environment): string
     {
+        $environment = self::normalise($environment);
+
         if (!isset(self::TELEMETRY_BASE_URIS[$environment])) {
             return '';
         }

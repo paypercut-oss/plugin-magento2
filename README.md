@@ -531,9 +531,13 @@ $this->subscriptionManager->resumeSubscription($subscriptionId);
 | `stage` | `https://api.stage.paypercut.net/v1` |
 | `dev` | `https://api.dev.paypercut.net/v1` |
 
-An unset or unrecognised environment (including the legacy `sandbox` value
-stores held before this setting became real) falls back to production, so an
-existing store keeps taking payments.
+An unset or unrecognised environment falls back to production, so an existing
+store keeps taking payments. The legacy `sandbox` value stores held before this
+setting became real resolves to `production` — sandbox and production always
+pointed at the same payment API host, so it is production under an older name.
+**Upgrade note:** BNPL is the one path where the two differed; a store still
+holding `sandbox` now reaches the production BNPL API rather than the old
+internal host, and should confirm its BNPL credentials against production.
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -618,16 +622,18 @@ store and their versions; how this store has the Paypercut payment methods
 configured (which options are switched on — never the values of your
 credentials); a record of each checkout, refund and payment notification the
 module handled and whether it succeeded, identified by Magento order number and
-Paypercut payment reference; when something fails, the error message, the file
-and line it came from, and which module or theme raised it; and when the session
-started and stopped.
+Paypercut payment reference; when something fails, the type of error, the file
+and line it came from, and which module or theme raised it — never error text
+written by Magento itself, which can quote your order data back; and when the session started
+and stopped.
 
 **Not shared:** customer names, email addresses, billing or shipping addresses,
 order totals, line items, payment card data, the reason text you type when
 issuing a refund, or any API key, webhook secret or password.
 
 Your API key is never sent to the telemetry service. It is used once, over
-HTTPS, to obtain a short-lived diagnostic token from api.paypercut.io.
+HTTPS, to obtain a short-lived diagnostic token from the Paypercut API this store
+is connected to — api.paypercut.io for a production store.
 
 Paypercut keeps this diagnostic data for 30 days.
 
@@ -637,7 +643,8 @@ The **Environment** setting picks both the payment API host and the telemetry
 edge host. A token minted for one environment is rejected by every other
 environment's edge, so a store whose environment is unset or unrecognised gets
 **no debug session at all** rather than a confusing one — while its payments
-continue against production.
+continue against production. The legacy `sandbox` value resolves to
+`production`, so those stores stay paired rather than losing telemetry.
 
 ## Testing
 

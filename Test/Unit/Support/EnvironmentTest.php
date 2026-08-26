@@ -56,9 +56,20 @@ class EnvironmentTest extends TestCase
     {
         return [
             'never set' => [''],
-            'the legacy sandbox value' => ['sandbox'],
             'nonsense' => ['staging-2'],
         ];
+    }
+
+    /**
+     * Sandbox and production always resolved to the same payment API host, so
+     * a store still holding the legacy value keeps a coherent pair rather than
+     * a production payment API and no telemetry.
+     */
+    public function testTheLegacySandboxValuePairsAsProduction(): void
+    {
+        $this->assertSame('https://api.paypercut.io/', Environment::apiBaseUriFor('sandbox'));
+        $this->assertSame('https://telemetry.paypercut.io/', Environment::telemetryBaseUriFor('sandbox'));
+        $this->assertSame(Environment::PRODUCTION, Environment::normalise('sandbox'));
     }
 
     /**
