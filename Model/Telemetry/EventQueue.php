@@ -82,6 +82,11 @@ class EventQueue
      * event, not the offending field: an event assembled wrongly cannot be
      * trusted in its other parts either.
      *
+     * The envelope is screened as it will be sent — every field of it, not a
+     * named subset. `order_ref` and the payment ids are on the wire like
+     * anything else, and on the webhook paths they come from a request body
+     * this store did not author.
+     *
      * @param array $envelopes
      * @return array
      */
@@ -95,17 +100,7 @@ class EventQueue
         $safe = [];
 
         foreach ($envelopes as $envelope) {
-            // `error` is a top-level sibling of `attrs`, so it has to be named
-            // here or it bypasses the one gate every producer funnels through.
-            $screened = [];
-
-            foreach (['attrs', 'error'] as $field) {
-                if (isset($envelope[$field]) && is_array($envelope[$field])) {
-                    $screened[$field] = $envelope[$field];
-                }
-            }
-
-            if (Event::isDenied($screened, $secrets)) {
+            if (Event::envelopeDenied($envelope, $secrets)) {
                 $this->session->audit(
                     'Telemetry: event dropped by the deny assertion',
                     ['event' => (string) ($envelope['event'] ?? 'unknown')]

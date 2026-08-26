@@ -29,7 +29,8 @@ unknown environment yields no session rather than a confusing one.
 | `production` | `https://api.paypercut.io/` | `https://telemetry.paypercut.io/` |
 | `stage` | `https://api.stage.paypercut.net/` | `https://telemetry.stage.paypercut.net/` |
 | `dev` | `https://api.dev.paypercut.net/` | `https://telemetry.dev.paypercut.net/` |
-| anything else (incl. the legacy `sandbox` value) | falls back to production | **none — no session** |
+| `sandbox` (legacy) | resolves to `production` | resolves to `production` |
+| anything else | falls back to production | **none — no session** |
 
 Every base is accepted only if it is `https` on a `paypercut.net` or
 `paypercut.io` host: a credential travels on the mint request.
@@ -166,16 +167,32 @@ refund reason text, customer names, email addresses, billing and shipping
 addresses, order totals, line items, absolute filesystem paths, the admin user
 id of whoever started the session, and upstream API prose.
 
-That last one is the rule most easily lost in a port. The platform quotes
-submitted input back — a rejected key arrives inside the error message — so
-`Event::apiFailure()` **always drops `error.message`** and lets `api_code`,
-`api_param`, `trace_id` and `error.type` carry the diagnosis. A message this
-module authored is the diagnosis and stays.
+That last one is the rule most easily lost in a port. **No exception message
+travels**, from any throwable: the Paypercut API quotes submitted input back, and
+Magento is worse — its DB layer puts the full SQL and `user@host` in the message,
+and its `LocalizedException`s on the refund and invoice paths carry money
+amounts the disclosure promises are not shared. `error.code`, `error.type`,
+`origin` and the scrubbed stack carry the diagnosis; `api_code`, `api_param` and
+`trace_id` carry it for an API failure. A message this module authored, set with
+`->because()`, is the diagnosis and stays. A fatal from an uncaught throwable is
+reported as its class name only, for the same reason.
 
 The deny assertion in `EventQueue::append()` is the last gate every producer
 funnels through, and it drops the **whole event**, not the offending field: a
 field that trips it means the event was assembled wrongly and the rest of it
-cannot be trusted either.
+cannot be trusted either. It screens the **whole envelope** — the correlation
+fields `order_ref` / `payment_id` / `payment_intent_id` included, because on the
+webhook paths their value came from an unauthenticated request body, not from
+this store. `EnvelopeScreenTest` enumerates the envelope rather than naming
+fields, so a field added to `Event::envelope()` is screened by construction.
+
+The credential list the assertion compares against is read at the **default
+scope and at every website scope**: the credential fields are website-scoped, and
+a list holding the wrong website's key leaves the literal-secret comparison dead
+for that website. A module NAME can also trip the denied-key pattern all by
+itself (`ParadoxLabs_Authnetcim`, `MSP_TwoFactorAuth`); those entries travel as
+`module_<n>` values in their own `environment.plugins` chunk so one such module
+cannot cost the whole inventory.
 
 The merchant-facing promise lives in two places that must stay in step —
 `view/adminhtml/templates/system/config/debug-session-disclosure.phtml` and the
@@ -203,7 +220,7 @@ pairing, the batch splitter, the flusher's decision table, the mint clock
 arithmetic, and the two drift guards.
 
 ```bash
-php phpunit.phar          # or: vendor/bin/phpunit
+php phpunit-10.phar        # or: vendor/bin/phpunit
 ```
 
 `Test/bootstrap.php` deliberately avoids Composer: installing this module's

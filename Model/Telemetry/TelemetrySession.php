@@ -7,6 +7,8 @@ use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Encryption\EncryptorInterface;
 use Magento\Framework\Math\Random;
 use Magento\Framework\Serialize\Serializer\Json;
+use Magento\Store\Model\ScopeInterface;
+use Magento\Store\Model\StoreManagerInterface;
 use Paypercut\Payment\Model\Support\Environment;
 use Psr\Log\LoggerInterface;
 
@@ -127,6 +129,18 @@ class TelemetrySession
     private $logger;
 
     /**
+     * @var StoreManagerInterface
+     */
+    private $storeManager;
+
+    /**
+     * Per-request memo for the credential scopes.
+     *
+     * @var array<int, array{0: string, 1: int|null}>|null
+     */
+    private $scopeMemo;
+
+    /**
      * @param Store $store
      * @param SentLog $sentLog
      * @param Environment $environment
@@ -135,6 +149,7 @@ class TelemetrySession
      * @param Random $random
      * @param Json $json
      * @param LoggerInterface $logger
+     * @param StoreManagerInterface $storeManager
      */
     public function __construct(
         Store $store,
@@ -144,7 +159,8 @@ class TelemetrySession
         EncryptorInterface $encryptor,
         Random $random,
         Json $json,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        StoreManagerInterface $storeManager
     ) {
         $this->store = $store;
         $this->sentLog = $sentLog;
@@ -154,6 +170,7 @@ class TelemetrySession
         $this->random = $random;
         $this->json = $json;
         $this->logger = $logger;
+        $this->storeManager = $storeManager;
     }
 
     /**
@@ -322,12 +339,21 @@ class TelemetrySession
     public function credentials(): array
     {
         $secrets = [$this->token()];
+        $scopes = $this->credentialScopes();
 
+        // Every scope, not just the default one: the credential fields are
+        // website-scoped in system.xml, and a list holding the wrong website's
+        // key leaves the literal-secret comparison — the only screen that
+        // catches a format nobody anticipated — silently dead for that website.
         foreach ([self::CONFIG_PATH_SECRET_KEY, self::CONFIG_PATH_BNPL_SECRET_KEY] as $path) {
-            $secrets[] = (string) $this->scopeConfig->getValue($path);
+            foreach ($scopes as $scope) {
+                $secrets[] = (string) $this->scopeConfig->getValue($path, $scope[0], $scope[1]);
+            }
         }
 
-        $secrets[] = $this->webhookSecret();
+        foreach ($scopes as $scope) {
+            $secrets[] = $this->webhookSecret($scope[0], $scope[1]);
+        }
 
         // An empty secret would match every string, so the list is filtered.
         return array_values(array_filter($secrets, static function ($secret) {
@@ -338,11 +364,15 @@ class TelemetrySession
     /**
      * The stored webhook secret, decrypted.
      *
+     * @param string $scopeType
+     * @param int|string|null $scopeCode
      * @return string
      */
-    public function webhookSecret(): string
-    {
-        $stored = (string) $this->scopeConfig->getValue(self::CONFIG_PATH_WEBHOOK_SECRET);
+    public function webhookSecret(
+        string $scopeType = ScopeConfigInterface::SCOPE_TYPE_DEFAULT,
+        $scopeCode = null
+    ): string {
+        $stored = (string) $this->scopeConfig->getValue(self::CONFIG_PATH_WEBHOOK_SECRET, $scopeType, $scopeCode);
 
         if ($stored === '') {
             return '';
@@ -353,6 +383,34 @@ class TelemetrySession
         } catch (\Exception $exception) {
             return '';
         }
+    }
+
+    /**
+     * Default scope plus every website that can hold its own credentials.
+     *
+     * @return array<int, array{0: string, 1: int|null}>
+     */
+    private function credentialScopes(): array
+    {
+        if ($this->scopeMemo !== null) {
+            return $this->scopeMemo;
+        }
+
+        $scopes = [[ScopeConfigInterface::SCOPE_TYPE_DEFAULT, null]];
+
+        try {
+            foreach ($this->storeManager->getWebsites() as $website) {
+                $scopes[] = [ScopeInterface::SCOPE_WEBSITE, (int) $website->getId()];
+            }
+        } catch (\Exception $exception) {
+            // A store that cannot enumerate its websites still screens against
+            // the default scope; it must never stop screening altogether.
+            $this->logger->warning('Paypercut telemetry: website scopes unreadable for the deny list');
+        }
+
+        $this->scopeMemo = $scopes;
+
+        return $scopes;
     }
 
     /**

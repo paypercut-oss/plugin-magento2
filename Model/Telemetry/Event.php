@@ -38,6 +38,12 @@ class Event
     const MAX_STACK_FRAMES = 8;
 
     /**
+     * Shortest run of a credential that still identifies it, for the clipped
+     * comparison below. Long enough that ordinary prose cannot collide with it.
+     */
+    const MIN_SECRET_PREFIX_BYTES = 12;
+
+    /**
      * Field names that must never appear in an event, whatever their value.
      */
     const DENIED_KEY_PATTERN = '/secret|token|password|credential|nonce|auth|_key$/i';
@@ -160,11 +166,15 @@ class Event
         $event->error = ['code' => self::text($code) ?: 'unknown'];
 
         if ($exception !== null) {
+            // An exception message is upstream text: Magento's DB layer quotes
+            // the full SQL and `user@host` back, and its LocalizedExceptions
+            // carry order totals the disclosure promises are not shared. The
+            // type, the scrubbed stack and `origin` carry the diagnosis; a
+            // message this module authored is set with because().
             $event->error['type'] = self::shortClassName($exception);
-            $event->error['message'] = self::text($exception->getMessage());
             $event->error['stack'] = self::stack($exception);
 
-            $event->fields += self::origin(self::frameFiles($exception));
+            $event->addFields(self::origin(self::frameFiles($exception)));
         }
 
         return $event;
@@ -182,12 +192,14 @@ class Event
     {
         $event = self::failure($name, 'http_' . $exception->getStatusCode(), $attrs, $exception);
 
-        // The only string here this module does not author, and the platform
-        // quotes its input back — a rejected key arrives inside it. `api_code`
-        // and `trace_id` carry the diagnosis instead.
+        // The platform quotes its input back — a rejected key arrives inside
+        // the message — so no API prose travels. `api_code` and `trace_id`
+        // carry the diagnosis instead.
         unset($event->error['message']);
 
         $event->error['type'] = self::text($exception->getErrorType()) ?: ($event->error['type'] ?? 'ApiError');
+
+        $api = [];
 
         foreach ([
             'api_code' => $exception->getErrorCode(),
@@ -197,11 +209,13 @@ class Event
             $clean = self::text((string) $value);
 
             if ($clean !== '') {
-                $event->fields[$key] = $clean;
+                $api[$key] = $clean;
             }
         }
 
-        $event->fields['http_status'] = $exception->getStatusCode();
+        $api['http_status'] = $exception->getStatusCode();
+
+        $event->addFields($api);
 
         return $event;
     }
@@ -222,14 +236,19 @@ class Event
     {
         $event = new self('php.fatal', ['level' => $level]);
 
-        $event->fields += self::origin([$file]);
+        $event->addFields(self::origin([$file]));
+
+        $fatal = self::fatalError($message);
 
         $event->error = [
             'code' => 'php_fatal',
-            'type' => 'FatalError',
-            'message' => self::text(self::fatalMessage($message)),
+            'type' => $fatal['type'],
             'stack' => [self::relativePath($file) . ':' . $line],
         ];
+
+        if ($fatal['message'] !== '') {
+            $event->error['message'] = $fatal['message'];
+        }
 
         return $event;
     }
@@ -307,21 +326,49 @@ class Event
     public static function environmentPlugins(array $plugins): array
     {
         $total = count($plugins);
-        $chunks = array_chunk($plugins, self::MAX_ATTRS - 2, true);
-        $events = [];
+        $named = [];
+        $quoted = [];
 
-        foreach ($chunks as $index => $chunk) {
+        foreach ($plugins as $slug => $version) {
+            $key = self::text((string) $slug);
+
+            if ($key === '') {
+                continue;
+            }
+
+            // A module NAME can trip the denied-key screen all by itself —
+            // `ParadoxLabs_Authnetcim`, `MSP_TwoFactorAuth` — and the assertion
+            // drops the whole event, taking its 13 innocent chunk-mates with
+            // it. Those names travel as values instead, where only the value
+            // screens apply and the inventory survives intact.
+            if (preg_match(self::DENIED_KEY_PATTERN, $key)) {
+                $quoted[] = $key . ' ' . self::text((string) $version);
+                continue;
+            }
+
+            $named[$key] = self::text((string) $version);
+        }
+
+        $events = [];
+        $chunk = 0;
+
+        foreach (array_chunk($named, self::MAX_ATTRS - 2, true) as $slice) {
+            $chunk++;
+            $events[] = new self('environment.plugins', [
+                'plugin_count' => $total,
+                'chunk' => $chunk,
+            ] + $slice);
+        }
+
+        foreach (array_chunk($quoted, self::MAX_ATTRS - 2) as $slice) {
+            $chunk++;
             $fields = [
                 'plugin_count' => $total,
-                'chunk' => $index + 1,
+                'chunk' => $chunk,
             ];
 
-            foreach ($chunk as $slug => $version) {
-                $key = self::text((string) $slug);
-
-                if ($key !== '') {
-                    $fields[$key] = self::text((string) $version);
-                }
+            foreach ($slice as $index => $entry) {
+                $fields['module_' . ($index + 1)] = $entry;
             }
 
             $events[] = new self('environment.plugins', $fields);
@@ -410,10 +457,28 @@ class Event
         // PHP renders an empty array as [], which the edge reads as "not an
         // object" and records as a drop against an otherwise clean event.
         if (!empty($this->fields)) {
-            $envelope['attrs'] = $this->fields;
+            $envelope['attrs'] = self::capFields($this->fields);
         }
 
         return $envelope;
+    }
+
+    /**
+     * The screen applied to an envelope on its way to the queue.
+     *
+     * The WHOLE envelope, not a hand-picked subset: the correlation fields
+     * written by about() are as much on the wire as `attrs`, and on the webhook
+     * paths their value came from an unauthenticated request body. A field
+     * added to envelope() tomorrow is screened by construction, because nothing
+     * here enumerates field names.
+     *
+     * @param array<string, mixed> $envelope
+     * @param array<int, mixed> $secrets
+     * @return bool
+     */
+    public static function envelopeDenied(array $envelope, array $secrets = []): bool
+    {
+        return self::isDenied($envelope, $secrets);
     }
 
     /**
@@ -463,9 +528,37 @@ class Event
             // credentials is not. This catches a secret whose format we never
             // anticipated, including one a future Paypercut release introduces.
             foreach ($secrets as $secret) {
-                if (is_string($secret) && $secret !== '' && strpos($value, $secret) !== false) {
+                if (!is_string($secret) || $secret === '') {
+                    continue;
+                }
+
+                if (strpos($value, $secret) !== false || self::endsWithSecretPrefix($value, $secret)) {
                     return true;
                 }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Does the value end in the opening of a secret?
+     *
+     * text() clamps at MAX_TEXT_BYTES before the assertion ever sees the value,
+     * so a credential sitting near that boundary reaches here with its tail cut
+     * off and the plain strpos() comparison misses it.
+     *
+     * @param string $value
+     * @param string $secret
+     * @return bool
+     */
+    private static function endsWithSecretPrefix(string $value, string $secret): bool
+    {
+        $longest = min(strlen($value), strlen($secret) - 1);
+
+        for ($length = $longest; $length >= self::MIN_SECRET_PREFIX_BYTES; $length--) {
+            if (substr($value, -$length) === substr($secret, 0, $length)) {
+                return true;
             }
         }
 
@@ -532,7 +625,9 @@ class Event
      */
     public static function identifier(string $value): string
     {
-        return preg_match('/^[A-Za-z0-9_.:-]{1,64}$/', $value) ? $value : '';
+        // \A/\z rather than ^/$: PCRE's `$` accepts a trailing newline, which
+        // would let "pi_1\n" through as identifier-shaped.
+        return preg_match('/\A[A-Za-z0-9_.:-]{1,64}\z/D', $value) ? $value : '';
     }
 
     /**
@@ -684,6 +779,55 @@ class Event
     }
 
     /**
+     * Merge module-authored diagnostic fields in, under the attribute cap.
+     *
+     * @param array<string, bool|float|int|string> $extra
+     * @return void
+     */
+    private function addFields(array $extra): void
+    {
+        $this->fields = self::capFields(array_merge($this->fields, $extra), $extra);
+    }
+
+    /**
+     * Hold a field set to MAX_ATTRS, keeping the fields this module added.
+     *
+     * The edge keeps attributes in sorted key order and drops the overflow, so
+     * an over-wide event loses whichever keys sort last — `origin`, `trace_id`
+     * and the version fields among them. Caller-supplied attrs give way first.
+     *
+     * @param array<string, bool|float|int|string> $fields
+     * @param array<string, bool|float|int|string> $keep
+     * @return array<string, bool|float|int|string>
+     */
+    private static function capFields(array $fields, array $keep = []): array
+    {
+        if (count($fields) <= self::MAX_ATTRS) {
+            return $fields;
+        }
+
+        $capped = [];
+
+        foreach ($fields as $key => $value) {
+            if (count($capped) < self::MAX_ATTRS && array_key_exists($key, $keep)) {
+                $capped[$key] = $value;
+            }
+        }
+
+        foreach ($fields as $key => $value) {
+            if (count($capped) >= self::MAX_ATTRS) {
+                break;
+            }
+
+            if (!array_key_exists($key, $capped)) {
+                $capped[$key] = $value;
+            }
+        }
+
+        return $capped;
+    }
+
+    /**
      * File and line only, at most MAX_STACK_FRAMES of them.
      *
      * Never getTraceAsString(): that renders call arguments, which here are
@@ -756,6 +900,31 @@ class Event
         }
 
         return '[external]';
+    }
+
+    /**
+     * Split PHP's fatal message into a type and the part that may be reported.
+     *
+     * An uncaught throwable puts ITS OWN message here, which is upstream text
+     * under another name — the same prose failure() refuses to send, plus a
+     * ValueError's quoted argument values. Only the class survives. An engine
+     * fatal (memory exhausted, undefined function) is PHP's own wording and is
+     * kept, scrubbed of the inlined trace and of absolute paths.
+     *
+     * @param string $message
+     * @return array{type: string, message: string}
+     */
+    private static function fatalError(string $message): array
+    {
+        $message = self::fatalMessage($message);
+
+        if (preg_match('/\AUncaught\s+([A-Za-z0-9_\\\\]+)\s*:/', $message, $matches)) {
+            $parts = explode('\\', $matches[1]);
+
+            return ['type' => self::text((string) end($parts)) ?: 'FatalError', 'message' => ''];
+        }
+
+        return ['type' => 'FatalError', 'message' => self::text($message)];
     }
 
     /**

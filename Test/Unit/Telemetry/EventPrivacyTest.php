@@ -55,6 +55,87 @@ class EventPrivacyTest extends TestCase
         $this->assertSame(401, $envelope['attrs']['http_status']);
     }
 
+    public function testAnExceptionMessageNeverTravels(): void
+    {
+        $envelope = Event::failure(
+            'refund.failed',
+            'credit_memo_failed',
+            ['source' => 'credit_memo'],
+            new \RuntimeException('SQLSTATE[42000]: SELECT * FROM sales_order, magento_user@db-01.internal')
+        )->envelope(0);
+
+        $this->assertArrayNotHasKey('message', $envelope['error']);
+        $this->assertSame('RuntimeException', $envelope['error']['type']);
+        $this->assertSame('credit_memo_failed', $envelope['error']['code']);
+        $this->assertArrayHasKey('origin', $envelope['attrs']);
+    }
+
+    public function testAFatalFromAnUncaughtThrowableReportsTheClassOnly(): void
+    {
+        $envelope = Event::fatal(
+            'Uncaught Magento\\Framework\\Exception\\LocalizedException: '
+                . 'The most money available to refund is $120.50 in /var/www/html/app/code/X.php:31'
+                . "\nStack trace:\n#0 /var/www/html/index.php(1)",
+            '/var/www/html/app/code/X.php',
+            31,
+            1
+        )->envelope(0);
+
+        $this->assertArrayNotHasKey('message', $envelope['error']);
+        $this->assertSame('LocalizedException', $envelope['error']['type']);
+    }
+
+    public function testAnEngineFatalKeepsPhpsOwnWording(): void
+    {
+        $envelope = Event::fatal('Allowed memory size of 134217728 bytes exhausted', '/var/www/x.php', 3, 1)
+            ->envelope(0);
+
+        $this->assertSame('Allowed memory size of 134217728 bytes exhausted', $envelope['error']['message']);
+        $this->assertSame('FatalError', $envelope['error']['type']);
+    }
+
+    public function testAttributesStayUnderTheCapAfterTheModuleAddsItsOwn(): void
+    {
+        $attrs = [];
+
+        for ($i = 0; $i < Event::MAX_ATTRS; $i++) {
+            $attrs['caller_' . $i] = $i;
+        }
+
+        $envelope = Event::failure('api.request_failed', 'transport', $attrs, new \RuntimeException('boom'))
+            ->envelope(0);
+
+        $this->assertLessThanOrEqual(Event::MAX_ATTRS, count($envelope['attrs']));
+        $this->assertArrayHasKey('origin', $envelope['attrs']);
+    }
+
+    public function testAModuleNamedLikeASecretDoesNotCostTheWholeInventory(): void
+    {
+        $modules = ['ParadoxLabs_Authnetcim' => '6.6.0', 'MSP_TwoFactorAuth' => '1.2.3'];
+
+        for ($i = 0; $i < 13; $i++) {
+            $modules['Vendor_Module' . $i] = '1.0.' . $i;
+        }
+
+        $reported = [];
+
+        foreach (Event::environmentPlugins($modules) as $event) {
+            $envelope = $event->envelope(0);
+
+            $this->assertFalse(Event::envelopeDenied($envelope, ['ppc_live_store_secret']));
+
+            foreach ($envelope['attrs'] as $key => $value) {
+                if ($key !== 'plugin_count' && $key !== 'chunk') {
+                    $reported[] = strpos((string) $key, 'module_') === 0 ? (string) $value : $key . ' ' . $value;
+                }
+            }
+        }
+
+        $this->assertCount(15, $reported);
+        $this->assertContains('ParadoxLabs_Authnetcim 6.6.0', $reported);
+        $this->assertContains('MSP_TwoFactorAuth 1.2.3', $reported);
+    }
+
     public function testAuthoredMessagesSurvive(): void
     {
         $envelope = Event::failure('webhook.registration_failed', 'rejected')
@@ -76,6 +157,7 @@ class EventPrivacyTest extends TestCase
         $this->assertSame('', Event::identifier('jane@example.com'));
         $this->assertSame('', Event::identifier('12 Sunset Road'));
         $this->assertSame('', Event::identifier(str_repeat('a', 65)));
+        $this->assertSame('', Event::identifier("dbg_abc\n"));
     }
 
     public function testAttrsKeepScalarTypesAndDropContainers(): void
