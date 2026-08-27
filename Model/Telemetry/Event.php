@@ -44,6 +44,15 @@ class Event
     const MIN_SECRET_PREFIX_BYTES = 12;
 
     /**
+     * How deep the deny assertion will walk an envelope before refusing it.
+     *
+     * The wire shape nests two levels (`error.stack`); the bound only stops a
+     * malformed event from recursing without end, and exceeding it is a denial,
+     * never a pass.
+     */
+    const MAX_SCREEN_DEPTH = 6;
+
+    /**
      * Field names that must never appear in an event, whatever their value.
      */
     const DENIED_KEY_PATTERN = '/secret|token|password|credential|nonce|auth|_key$/i';
@@ -505,14 +514,39 @@ class Event
             // it. Without recursion the assertion sees a non-string and gives
             // up, which is exactly where free text now lives.
             if (is_array($value)) {
-                if ($depth < 2 && self::isDenied($value, $secrets, $depth + 1)) {
+                // Deny rather than skip past the bound: a structure the screen
+                // cannot finish walking is one it cannot vouch for.
+                if ($depth >= self::MAX_SCREEN_DEPTH) {
+                    return true;
+                }
+
+                if (self::isDenied($value, $secrets, $depth + 1)) {
                     return true;
                 }
 
                 continue;
             }
 
-            if (!is_string($value) || $value === '') {
+            if ($value === null) {
+                continue;
+            }
+
+            // Anything that is not a scalar cannot be rendered for comparison,
+            // so it is denied rather than waved through unread.
+            if (!is_scalar($value)) {
+                return true;
+            }
+
+            // Screen the wire form, not the PHP value: json_encode renders an
+            // int or float verbatim, so `4111111111111111` is a PAN on the wire
+            // whether or not it was ever a string — and a plain (string) cast
+            // would hide the float one behind exponent notation.
+            if (!is_string($value)) {
+                $encoded = json_encode($value);
+                $value = is_string($encoded) ? $encoded : '';
+            }
+
+            if ($value === '') {
                 continue;
             }
 

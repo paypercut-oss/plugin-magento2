@@ -78,11 +78,66 @@ class EventDenyTest extends TestCase
         $this->assertFalse(Event::isDenied(['attrs' => ['note' => 'all fine']], ['', null]));
     }
 
-    public function testRecursionStopsAtTwoLevels(): void
+    /**
+     * The bound on recursion is a denial, not a pass: a structure the screen
+     * cannot finish walking is one it cannot vouch for.
+     */
+    public function testNestingBeyondTheScreenDepthIsDenied(): void
     {
-        $tooDeep = ['attrs' => ['a' => ['b' => ['c' => ['api_key' => 'x']]]]];
+        $deep = 'x';
 
-        $this->assertFalse(Event::isDenied($tooDeep));
+        for ($i = 0; $i <= Event::MAX_SCREEN_DEPTH; $i++) {
+            $deep = ['level' => $deep];
+        }
+
+        $this->assertTrue(Event::isDenied(['attrs' => $deep]));
+    }
+
+    /**
+     * A value the screen cannot render for comparison is denied, not skipped.
+     */
+    public function testAnUnrenderableValueIsDenied(): void
+    {
+        $this->assertTrue(Event::isDenied(['attrs' => ['note' => new \stdClass()]]));
+    }
+
+    /**
+     * json_encode puts an int on the wire verbatim, so the screen must read it
+     * as the digits it will become.
+     *
+     * @dataProvider nonStringPoisons
+     * @param mixed $value
+     */
+    public function testNonStringScalarsAreScreened($value): void
+    {
+        $this->assertTrue(Event::isDenied(['attrs' => ['ref' => $value]]));
+    }
+
+    /**
+     * @return array<string, array{0: mixed}>
+     */
+    public static function nonStringPoisons(): array
+    {
+        return [
+            'an integer PAN' => [4111111111111111],
+            'a float PAN' => [4111111111111111.0],
+        ];
+    }
+
+    /**
+     * The ordinary numeric attributes this module actually sends stay.
+     */
+    public function testOrdinaryNumbersSurvive(): void
+    {
+        $this->assertFalse(Event::isDenied([
+            'attrs' => [
+                'expires_at' => 1787250271,
+                'http_status' => 401,
+                'plugin_count' => 137,
+                'is_ssl' => true,
+                'level' => 1,
+            ],
+        ]));
     }
 
     public function testLuhnScreenIgnoresRunsOutsideCardLength(): void

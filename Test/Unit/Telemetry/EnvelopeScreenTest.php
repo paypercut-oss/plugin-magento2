@@ -27,7 +27,11 @@ class EnvelopeScreenTest extends TestCase
     /**
      * Values that must never reach the wire, whichever field carries them.
      *
-     * @return array<string, string>
+     * The non-string entries are not padding: the envelope is JSON, and
+     * json_encode writes an int or a float out as its digits, so a numeric
+     * attribute is every bit as much a PAN on the wire as a quoted one.
+     *
+     * @return array<string, mixed>
      */
     private static function poisons(): array
     {
@@ -38,6 +42,9 @@ class EnvelopeScreenTest extends TestCase
             'a paypercut key' => 'ppc_live_store_secret',
             'a key in prose' => 'rejected ppc_live_store_secret here',
             'a bearer token' => 'bearer eyJhbGciOiJSUzI1NiJ9.body',
+            'an integer PAN' => 4111111111111111,
+            'a float PAN' => 4111111111111111.0,
+            'a nested PAN' => ['note' => '4111111111111111'],
         ];
     }
 
@@ -148,8 +155,14 @@ class EnvelopeScreenTest extends TestCase
     {
         $cases = [];
 
+        // about() casts to string, so only the string poisons survive the trip
+        // into a correlation field as themselves.
         foreach (['order_ref', 'payment_id', 'payment_intent_id'] as $field) {
             foreach (self::poisons() as $label => $poison) {
+                if (!is_string($poison)) {
+                    continue;
+                }
+
                 $cases[$field . ': ' . $label] = [$field, $poison];
             }
         }
@@ -224,10 +237,10 @@ class EnvelopeScreenTest extends TestCase
     /**
      * @param array $envelope
      * @param array<int, string|int> $path
-     * @param string $value
+     * @param mixed $value
      * @return array
      */
-    private static function withValueAt(array $envelope, array $path, string $value): array
+    private static function withValueAt(array $envelope, array $path, $value): array
     {
         $cursor = &$envelope;
 
