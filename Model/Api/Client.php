@@ -13,6 +13,11 @@ use Psr\Log\LoggerInterface;
 
 class Client
 {
+    // BNPL is out of scope for telemetry, so its hosts stay exactly as they were
+    // rather than following the environment the debug session introduced.
+    const SANDBOX_BNPL_API_URL = 'https://bnpl-gw.bender.paypercut.net/v1';
+    const PRODUCTION_BNPL_API_URL = 'https://api.paypercut.io/bnpl/v1';
+
     const CONFIG_PATH_ENVIRONMENT = Environment::CONFIG_PATH_ENVIRONMENT;
     const CONFIG_PATH_SECRET_KEY = 'payment/paypercut_card/secret_key';
     const CONFIG_PATH_DEBUG = 'payment/paypercut_card/debug';
@@ -518,7 +523,12 @@ class Client
      */
     private function getBnplApiUrl(): string
     {
-        return $this->environment->getApiBaseUri() . 'bnpl/v1';
+        $environment = $this->scopeConfig->getValue(
+            self::CONFIG_PATH_ENVIRONMENT,
+            ScopeInterface::SCOPE_STORE
+        );
+
+        return $environment === 'production' ? self::PRODUCTION_BNPL_API_URL : self::SANDBOX_BNPL_API_URL;
     }
 
     /**
