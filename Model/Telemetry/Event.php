@@ -44,6 +44,23 @@ class Event
     const MIN_SECRET_PREFIX_BYTES = 12;
 
     /**
+     * How far past MAX_TEXT_BYTES the screen looks before a value is clamped.
+     *
+     * Clamping runs before the assertion does, so a PAN or a credential that
+     * straddles the byte bound would otherwise reach the wire with its tail
+     * cut off — and 15 of 16 PAN digits is not redaction, it is a Luhn puzzle
+     * with one solution. Wide enough to hold the longest poison whole.
+     */
+    const SCREEN_OVERLAP_BYTES = 64;
+
+    /**
+     * The card-number length range the PAN screen recognises.
+     */
+    const MIN_PAN_DIGITS = 13;
+
+    const MAX_PAN_DIGITS = 19;
+
+    /**
      * How deep the deny assertion will walk an envelope before refusing it.
      *
      * The wire shape nests two levels (`error.stack`); the bound only stops a
@@ -341,7 +358,7 @@ class Event
         foreach ($plugins as $slug => $version) {
             $key = self::text((string) $slug);
 
-            if ($key === '') {
+            if ($key === '' || self::shapeDenied($key)) {
                 continue;
             }
 
@@ -389,16 +406,19 @@ class Event
     /**
      * Attach the ids that join this event to a payment.
      *
+     * Bound as ids, not as free text: on the webhook paths these arrive in an
+     * unauthenticated request body, and only an id belongs in an id field.
+     *
      * @param array<string, mixed> $correlation
      * @return $this
      */
     public function about(array $correlation): self
     {
         foreach (['payment_intent_id', 'payment_id', 'order_ref'] as $field) {
-            $value = trim((string) ($correlation[$field] ?? ''));
+            $value = self::correlationId(trim((string) ($correlation[$field] ?? '')));
 
             if ($value !== '') {
-                $this->correlation[$field] = self::text($value);
+                $this->correlation[$field] = $value;
             }
         }
 
@@ -506,7 +526,12 @@ class Event
     public static function isDenied(array $fields, array $secrets = [], int $depth = 0): bool
     {
         foreach ($fields as $key => $value) {
-            if (preg_match(self::DENIED_KEY_PATTERN, (string) $key)) {
+            $name = (string) $key;
+
+            // A key is on the wire exactly like a value, so it faces the value
+            // screens as well: a PAN or a credential is no safer as a field
+            // name than as a field.
+            if (preg_match(self::DENIED_KEY_PATTERN, $name) || self::valueDenied($name, $secrets)) {
                 return true;
             }
 
@@ -550,29 +575,57 @@ class Event
                 continue;
             }
 
-            if (preg_match(self::DENIED_VALUE_PATTERN, $value)) {
+            if (self::valueDenied($value, $secrets)) {
                 return true;
-            }
-
-            if (self::containsCardNumber($value)) {
-                return true;
-            }
-
-            // Shape matching is a guess; comparing against the store's actual
-            // credentials is not. This catches a secret whose format we never
-            // anticipated, including one a future Paypercut release introduces.
-            foreach ($secrets as $secret) {
-                if (!is_string($secret) || $secret === '') {
-                    continue;
-                }
-
-                if (strpos($value, $secret) !== false || self::endsWithSecretPrefix($value, $secret)) {
-                    return true;
-                }
             }
         }
 
         return false;
+    }
+
+    /**
+     * Everything that disqualifies a single rendered string, key or value.
+     *
+     * @param string $value
+     * @param array<int, mixed> $secrets
+     * @return bool
+     */
+    private static function valueDenied(string $value, array $secrets): bool
+    {
+        if ($value === '') {
+            return false;
+        }
+
+        if (self::shapeDenied($value)) {
+            return true;
+        }
+
+        // Shape matching is a guess; comparing against the store's actual
+        // credentials is not. This catches a secret whose format we never
+        // anticipated, including one a future Paypercut release introduces.
+        foreach ($secrets as $secret) {
+            if (!is_string($secret) || $secret === '') {
+                continue;
+            }
+
+            if (strpos($value, $secret) !== false || self::endsWithSecretPrefix($value, $secret)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The screens that need no knowledge of this store: credential shapes and
+     * card numbers. Applied before the byte clamp as well as after it.
+     *
+     * @param string $value
+     * @return bool
+     */
+    private static function shapeDenied(string $value): bool
+    {
+        return preg_match(self::DENIED_VALUE_PATTERN, $value) === 1 || self::containsCardNumber($value);
     }
 
     /**
@@ -600,24 +653,39 @@ class Event
     }
 
     /**
-     * A Luhn-valid 13-19 digit run anywhere in the value.
+     * A Luhn-valid 13-19 digit card number anywhere in the value.
      *
      * The edge screens for a PAN too, but only when the whole value is one:
      * `Card 4111111111111111 was declined` passes it. Card data must never
      * leave a merchant estate, so the client is the right place to enforce it.
+     *
+     * Every window of the digit run is tested, not the run as a whole: a PAN
+     * with one digit stuck to it is still a PAN, and testing only the maximal
+     * run means a single adjacent digit defeats the screen.
      *
      * @param string $value
      * @return bool
      */
     public static function containsCardNumber(string $value): bool
     {
-        if (!preg_match_all('/\d(?:[ -]?\d){12,18}/', $value, $matches)) {
+        if (!preg_match_all('/\d(?:[ -]?\d){12,}/', $value, $matches)) {
             return false;
         }
 
-        foreach ($matches[0] as $candidate) {
-            if (self::luhnValid((string) preg_replace('/\D/', '', $candidate))) {
-                return true;
+        foreach ($matches[0] as $run) {
+            $digits = (string) preg_replace('/\D/', '', $run);
+            $length = strlen($digits);
+
+            for ($start = 0; $start + self::MIN_PAN_DIGITS <= $length; $start++) {
+                for ($size = self::MIN_PAN_DIGITS; $size <= self::MAX_PAN_DIGITS; $size++) {
+                    if ($start + $size > $length) {
+                        break;
+                    }
+
+                    if (self::luhnValid(substr($digits, $start, $size))) {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -643,12 +711,34 @@ class Event
             $clean = (string) preg_replace('/[^\x20-\x7E]/', '', $value);
         }
 
-        // mb_strcut cuts on a byte budget while respecting codepoint
-        // boundaries; mb_substr counts codepoints and would overshoot the
-        // edge's byte bound.
+        $clamped = self::clamp($clean, self::MAX_TEXT_BYTES);
+
+        if ($clamped === $clean) {
+            return $clamped;
+        }
+
+        // The clamp runs before the deny assertion, so it must never turn a
+        // value the assertion would deny into one it would not. When it would,
+        // the pre-clamp window travels instead and the whole event is dropped.
+        $window = self::clamp($clean, self::MAX_TEXT_BYTES + self::SCREEN_OVERLAP_BYTES);
+
+        return self::shapeDenied($window) ? $window : $clamped;
+    }
+
+    /**
+     * Cut to a byte budget on a codepoint boundary.
+     *
+     * mb_substr counts codepoints and would overshoot the edge's byte bound.
+     *
+     * @param string $value
+     * @param int $bytes
+     * @return string
+     */
+    private static function clamp(string $value, int $bytes): string
+    {
         return function_exists('mb_strcut')
-            ? mb_strcut($clean, 0, self::MAX_TEXT_BYTES)
-            : substr($clean, 0, self::MAX_TEXT_BYTES);
+            ? mb_strcut($value, 0, $bytes)
+            : substr($value, 0, $bytes);
     }
 
     /**
@@ -662,6 +752,23 @@ class Event
         // \A/\z rather than ^/$: PCRE's `$` accepts a trailing newline, which
         // would let "pi_1\n" through as identifier-shaped.
         return preg_match('/\A[A-Za-z0-9_.:-]{1,64}\z/D', $value) ? $value : '';
+    }
+
+    /**
+     * A correlation id: an identifier, plus the separators a merchant-facing
+     * order reference really uses.
+     *
+     * Deliberately wider than identifier() and no wider: a Magento increment
+     * id carries a store prefix and a merchant may shape it `MAG-2026/8891`,
+     * which must survive intact, while markup, a URL, a bidi override and SQL
+     * are not ids and are dropped rather than clamped into the field.
+     *
+     * @param string $value
+     * @return string
+     */
+    public static function correlationId(string $value): string
+    {
+        return preg_match('/\A[A-Za-z0-9_.:\/#-]{1,64}\z/D', $value) ? $value : '';
     }
 
     /**
@@ -1012,7 +1119,7 @@ class Event
     {
         $length = strlen($digits);
 
-        if ($length < 13 || $length > 19) {
+        if ($length < self::MIN_PAN_DIGITS || $length > self::MAX_PAN_DIGITS) {
             return false;
         }
 

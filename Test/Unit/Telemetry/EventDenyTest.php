@@ -39,6 +39,13 @@ class EventDenyTest extends TestCase
             'a spaced card number' => [['attrs' => ['note' => 'card 4111 1111 1111 1111 declined']]],
             'the store secret verbatim' => [['attrs' => ['note' => 'upstream said ppc_live_store_secret is bad']]],
             'a denied key nested in error' => [['error' => ['code' => 'x', 'api_key' => 'y']]],
+            'a PAN in KEY position' => [['attrs' => ['4111111111111111' => 'x']]],
+            'a PAN in prose in KEY position' => [['attrs' => ['card 4111 1111 1111 1111 declined' => 'x']]],
+            'a paypercut key in KEY position' => [['attrs' => ['ppc_live_store_secret' => 'x']]],
+            'a jwt in KEY position' => [['attrs' => ['bearer eyJhbGciOiJSUzI1NiJ9.body' => 'x']]],
+            'a store secret in KEY position two levels down' => [
+                ['error' => ['code' => 'x', 'stack' => ['ppc_live_store_secret' => 'Model/Api/Client.php:1']]],
+            ],
             'a secret two levels down in error.stack' => [
                 ['error' => ['code' => 'x', 'stack' => ['module/File.php:1 ppc_live_store_secret']]],
             ],
@@ -63,10 +70,16 @@ class EventDenyTest extends TestCase
             'disk_usage is not a secret key' => [['attrs' => ['note' => 'disk_usage exceeded']]],
             'backpack_pk_none is not a key' => [['attrs' => ['note' => 'backpack_pk_none missing']]],
             'risk_free is not a secret key' => [['attrs' => ['note' => 'risk_free window elapsed']]],
-            'a non-Luhn 16-digit run' => [['attrs' => ['note' => 'transaction 1234567890123456 not found']]],
+            'a digit run under the card floor' => [['attrs' => ['note' => 'transaction 123456789012 not found']]],
             'a millisecond timestamp' => [['attrs' => ['note' => 'expired at 1787250271000']]],
             'a minor-unit amount' => [['attrs' => ['note' => 'amount 4250 refused']]],
             'an ordinary order reference' => [['attrs' => ['order_ref' => '000000123']]],
+            'module names in KEY position' => [
+                ['attrs' => ['Magento_Sales' => '103.0.7', 'Mageplaza_Core' => '1.5.5', 'PayPal_Braintree' => '4.6.0']],
+            ],
+            'the attribute names this module sends' => [
+                ['attrs' => ['order_status' => 'processing', 'has_refund_id' => true, 'duration_ms' => 1387]],
+            ],
             'a stack of relative paths' => [
                 ['error' => ['code' => 'http_500', 'stack' => ['Model/Api/Client.php:214']]],
             ],
@@ -144,5 +157,43 @@ class EventDenyTest extends TestCase
     {
         $this->assertFalse(Event::containsCardNumber('123456789012'));
         $this->assertTrue(Event::containsCardNumber('4111111111111111'));
+    }
+
+    /**
+     * A PAN with digits stuck to it is still a PAN. Testing only the maximal
+     * digit run let one adjacent digit carry the whole number through.
+     *
+     * @dataProvider buriedCardNumbers
+     * @param string $value
+     */
+    public function testACardNumberInsideALongerDigitRunIsFound(string $value): void
+    {
+        $this->assertTrue(Event::containsCardNumber($value));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function buriedCardNumbers(): array
+    {
+        return [
+            'one digit in front' => ['94111111111111111'],
+            'one digit behind' => ['41111111111111119'],
+            'buried in a long run' => [str_repeat('7', 40) . '4111111111111111' . str_repeat('7', 40)],
+            'behind an order-shaped prefix' => ['999999999999995555555555554444'],
+            'inside a separated run' => ['99-4111-1111-1111-1111-99'],
+        ];
+    }
+
+    /**
+     * The window scan is deliberately eager: sliding across a long digit run
+     * refuses many 16-digit strings that testing the run whole would pass. No
+     * field this module sends carries an unbroken 13-digit run, and a PAN on
+     * the wire is the worse outcome.
+     */
+    public function testTheWindowScanIsEagerOnLongDigitRuns(): void
+    {
+        $this->assertTrue(Event::containsCardNumber('1234567890123456'));
+        $this->assertFalse(Event::containsCardNumber('1787250271000'));
     }
 }

@@ -133,6 +133,203 @@ class EnvelopeScreenTest extends TestCase
     }
 
     /**
+     * Every leaf KEY of every envelope, poisoned one at a time.
+     *
+     * A key is on the wire exactly like a value — `{"attrs":{"4111111111111111":"x"}}`
+     * ships the PAN just as surely — and substituting values alone cannot
+     * express that, which is how the key screens stayed shape-only.
+     *
+     * @dataProvider envelopes
+     * @param array $envelope
+     */
+    public function testEveryKeyOfTheEnvelopeIsScreened(array $envelope): void
+    {
+        $paths = self::leafPaths($envelope);
+
+        $this->assertNotEmpty($paths);
+
+        foreach ($paths as $path) {
+            foreach (self::poisons() as $label => $poison) {
+                if (!is_string($poison)) {
+                    continue;
+                }
+
+                $this->assertTrue(
+                    Event::envelopeDenied(self::withKeyAt($envelope, $path, $poison), self::SECRETS),
+                    sprintf('%s as the key at %s escaped the screen', $label, implode('.', $path))
+                );
+            }
+        }
+    }
+
+    /**
+     * The same thing through the public API rather than by mutating an array.
+     *
+     * @dataProvider stringPoisons
+     * @param string $poison
+     */
+    public function testAnAttributeNameCannotSmuggle(string $poison): void
+    {
+        $envelope = Event::of('webhook.received', [$poison => 'x'])->envelope(0);
+
+        $this->assertTrue(Event::envelopeDenied($envelope, self::SECRETS));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function stringPoisons(): array
+    {
+        $cases = [];
+
+        foreach (self::poisons() as $label => $poison) {
+            if (is_string($poison)) {
+                $cases[$label] = [$poison];
+            }
+        }
+
+        return $cases;
+    }
+
+    /**
+     * The clamp runs before the assertion does, so it must never clip a PAN
+     * into something the assertion passes: at 241 filler bytes the pre-fix
+     * clamp put 15 of 16 digits on the wire, and 15 digits Luhn-complete to
+     * exactly one PAN.
+     *
+     * @dataProvider clampLeadIns
+     * @param int $lead
+     */
+    public function testAPanStraddlingTheByteClampIsDenied(int $lead): void
+    {
+        $value = str_repeat('x', $lead) . '4111111111111111';
+
+        foreach ([
+            Event::of('api.request_failed', ['note' => $value])->envelope(0),
+            Event::failure('refund.failed', 'transport')->because($value)->envelope(0),
+        ] as $envelope) {
+            $this->assertTrue(
+                Event::envelopeDenied($envelope, self::SECRETS),
+                sprintf('a PAN starting at byte %d survived the clamp', $lead)
+            );
+        }
+    }
+
+    /**
+     * @return array<string, array{0: int}>
+     */
+    public static function clampLeadIns(): array
+    {
+        $cases = [];
+
+        foreach ([236, 240, 241, 244, 248, 252, 255] as $lead) {
+            $cases['lead-in of ' . $lead . ' bytes'] = [$lead];
+        }
+
+        return $cases;
+    }
+
+    /**
+     * The unauthenticated BNPL callback path, with a PAN carrying one extra
+     * digit — the shape that walked straight through the maximal-run scan.
+     *
+     * @dataProvider buriedPans
+     * @param string $attemptId
+     */
+    public function testABuriedPanCannotRideTheWebhookCorrelationId(string $attemptId): void
+    {
+        $envelope = Event::of('webhook.received', ['type' => 'bnpl_callback'])
+            ->about(['payment_id' => $attemptId])
+            ->envelope(0);
+
+        $this->assertTrue(Event::envelopeDenied($envelope, self::SECRETS));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function buriedPans(): array
+    {
+        return [
+            'a digit in front' => ['94111111111111111'],
+            'a digit behind' => ['41111111111111119'],
+            'the PAN alone' => ['4111111111111111'],
+        ];
+    }
+
+    /**
+     * Correlation ids are ids. 256 bytes of chosen text is not one, and an
+     * unauthenticated webhook body is where these values come from.
+     *
+     * @dataProvider hostileCorrelationValues
+     * @param string $poison
+     */
+    public function testCorrelationIdsAreBoundedToAnIdentifierCharset(string $poison): void
+    {
+        foreach (['order_ref', 'payment_id', 'payment_intent_id'] as $field) {
+            $envelope = Event::of('webhook.unresolved')->about([$field => $poison])->envelope(0);
+
+            $this->assertArrayNotHasKey($field, $envelope, $poison . ' reached ' . $field);
+            $this->assertStringNotContainsString(
+                substr($poison, 0, 8),
+                (string) json_encode($envelope),
+                $poison . ' reached the wire'
+            );
+        }
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function hostileCorrelationValues(): array
+    {
+        return [
+            'markup' => ['<script>alert(1)</script>'],
+            'a url' => ['https://evil.example/collect?a=b'],
+            'a bidi override' => ["\u{202E}drowssap"],
+            'sql' => ["0'; DROP TABLE sales_order;--"],
+            'an email address' => ['jane@example.com'],
+            'prose' => ['order for 12 Sunset Road'],
+            '256 bytes of text' => [str_repeat('A', 256)],
+        ];
+    }
+
+    /**
+     * The references this plugin actually builds must survive lossless — a
+     * Magento increment id, its store-prefixed and merchant-shaped forms, and
+     * the platform ids that ride beside them.
+     *
+     * @dataProvider realReferences
+     * @param string $reference
+     */
+    public function testRealReferencesAreLossless(string $reference): void
+    {
+        $envelope = Event::of('checkout.hosted.redirected')
+            ->about(['order_ref' => $reference, 'payment_id' => $reference])
+            ->envelope(0);
+
+        $this->assertSame($reference, $envelope['order_ref']);
+        $this->assertFalse(Event::envelopeDenied($envelope, self::SECRETS));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function realReferences(): array
+    {
+        return [
+            'a default increment id' => ['000000123'],
+            'a store-prefixed increment id' => ['2000000047'],
+            'a merchant-shaped reference' => ['MAG-2026/8891'],
+            'a dashed reference' => ['ORD-000012'],
+            'a payment intent id' => ['pi_3PabcDEF12345'],
+            'a charge id' => ['ch_1P2abcDEF'],
+            'a bnpl attempt uuid' => ['a1b2c3d4-e5f6-4711-8899-aabbccddeeff'],
+            'a scoped reference' => ['store2:000000456'],
+        ];
+    }
+
+    /**
      * The correlation fields specifically — the ones the old screen missed, and
      * the ones an unauthenticated webhook body reaches.
      *
@@ -144,8 +341,15 @@ class EnvelopeScreenTest extends TestCase
     {
         $envelope = Event::of('webhook.unresolved')->about([$field => $poison])->envelope(0);
 
-        $this->assertSame($poison, $envelope[$field], 'the value must actually reach the envelope');
-        $this->assertTrue(Event::envelopeDenied($envelope, self::SECRETS));
+        // Two outcomes are acceptable and no third one is: the value is not
+        // id-shaped and never lands, or it lands and the assertion denies it.
+        if (array_key_exists($field, $envelope)) {
+            $this->assertTrue(Event::envelopeDenied($envelope, self::SECRETS));
+
+            return;
+        }
+
+        $this->assertStringNotContainsString(substr($poison, 0, 8), (string) json_encode($envelope));
     }
 
     /**
@@ -232,6 +436,31 @@ class EnvelopeScreenTest extends TestCase
         }
 
         return $paths;
+    }
+
+    /**
+     * The same leaf, renamed rather than rewritten.
+     *
+     * @param array $envelope
+     * @param array<int, string|int> $path
+     * @param string $key
+     * @return array
+     */
+    private static function withKeyAt(array $envelope, array $path, string $key): array
+    {
+        $leaf = array_pop($path);
+        $cursor = &$envelope;
+
+        foreach ($path as $step) {
+            $cursor = &$cursor[$step];
+        }
+
+        $value = $cursor[$leaf];
+        unset($cursor[$leaf]);
+        $cursor[$key] = $value;
+        unset($cursor);
+
+        return $envelope;
     }
 
     /**

@@ -186,6 +186,21 @@ webhook paths their value came from an unauthenticated request body, not from
 this store. `EnvelopeScreenTest` enumerates the envelope rather than naming
 fields, so a field added to `Event::envelope()` is screened by construction.
 
+It screens **keys the same way it screens values** — an attribute name is on the
+wire exactly like an attribute — and it screens **before the byte clamp**, so a
+card number or a credential straddling `MAX_TEXT_BYTES` cannot be clipped into a
+shape the assertion passes; the pre-clamp window travels instead and the event is
+dropped. The card screen slides a 13-19 digit window across each digit run rather
+than testing the run whole, so a PAN with a digit stuck to it is still caught.
+That is deliberately eager: a long arbitrary digit run may be refused, and no
+field this module sends carries one.
+
+The correlation fields are bounded as **ids** (`Event::correlationId()`), not as
+free text: identifier characters plus the `/` and `#` a merchant-shaped Magento
+increment id really uses. Anything else is dropped rather than clamped into the
+field, which keeps markup, URLs and prose out of `order_ref` / `payment_id` /
+`payment_intent_id` on the unauthenticated webhook paths.
+
 The credential list the assertion compares against is read at the **default
 scope and at every website scope**: the credential fields are website-scoped, and
 a list holding the wrong website's key leaves the literal-secret comparison dead
