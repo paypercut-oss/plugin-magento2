@@ -4,8 +4,14 @@
         <resources>
             <resource id="Magento_Backend::admin">
                 <resource id="Magento_Backend::stores">
-                    <resource id="Magento_Config::config">
-                        <resource id="Paypercut_Payment::telemetry" title="Paypercut Debug Sessions" sortOrder="100"/>
+                    <!-- The ancestor chain must match core exactly, including
+                         stores_settings: attaching Magento_Config::config to a
+                         different parent creates a second node and the ACL
+                         builder then refuses to build at all. -->
+                    <resource id="Magento_Backend::stores_settings">
+                        <resource id="Magento_Config::config">
+                            <resource id="Paypercut_Payment::telemetry" title="Paypercut Debug Sessions" translate="title" sortOrder="100"/>
+                        </resource>
                     </resource>
                 </resource>
             </resource>
