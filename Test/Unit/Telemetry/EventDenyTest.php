@@ -247,6 +247,11 @@ class EventDenyTest extends TestCase
             'comma' => ['4111,1111,1111,1111'],
             'tab' => ["4111\t1111\t1111\t1111"],
             'mixed' => ['4111-1111.1111 1111'],
+            'no-break space' => ["4111\xC2\xA0" . "1111\xC2\xA0" . "1111\xC2\xA0" . '1111'],
+            'en dash' => ["4111\xE2\x80\x93" . "1111\xE2\x80\x93" . "1111\xE2\x80\x93" . '1111'],
+            'em dash' => ["4111\xE2\x80\x94" . "1111\xE2\x80\x94" . "1111\xE2\x80\x94" . '1111'],
+            'narrow no-break space' => ["4111\xE2\x80\xAF" . "1111\xE2\x80\xAF" . "1111\xE2\x80\xAF" . '1111'],
+            'minus sign' => ["4111\xE2\x88\x92" . "1111\xE2\x88\x92" . "1111\xE2\x88\x92" . '1111'],
         ];
     }
 

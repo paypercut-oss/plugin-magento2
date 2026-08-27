@@ -69,6 +69,36 @@ class Event
      */
     const PAN_RUN_PATTERN = '/\d(?:[ \t._\/,-]?\d){12,}/';
 
+
+    /**
+     * Multi-byte characters that group a card number, folded to a plain space.
+     *
+     * The scan reads bytes, so a separator wider than one byte ends the digit run
+     * and each group is screened alone: an en dash between the groups of a real
+     * PAN was enough to ship it verbatim. Word processors, spreadsheets and
+     * chat clients all substitute these for the ASCII forms on their own.
+     */
+    const PAN_UNICODE_SEPARATORS = [
+        "\xc2\xa0" => ' ', // U+00A0 no-break space
+        "\xc2\xad" => ' ', // U+00AD soft hyphen
+        "\xe2\x80\x87" => ' ', // U+2007 figure space
+        "\xe2\x80\x88" => ' ', // U+2008 punctuation space
+        "\xe2\x80\x89" => ' ', // U+2009 thin space
+        "\xe2\x80\x8b" => ' ', // U+200B zero-width space
+        "\xe2\x80\x90" => ' ', // U+2010 hyphen
+        "\xe2\x80\x91" => ' ', // U+2011 non-breaking hyphen
+        "\xe2\x80\x92" => ' ', // U+2012 figure dash
+        "\xe2\x80\x93" => ' ', // U+2013 en dash
+        "\xe2\x80\x94" => ' ', // U+2014 em dash
+        "\xe2\x80\x95" => ' ', // U+2015 horizontal bar
+        "\xe2\x80\xaf" => ' ', // U+202F narrow no-break space
+        "\xe2\x81\xa0" => ' ', // U+2060 word joiner
+        "\xe2\x88\x92" => ' ', // U+2212 minus sign
+        "\xe3\x80\x80" => ' ', // U+3000 ideographic space
+        "\xef\xbb\xbf" => ' ', // U+FEFF zero-width no-break space
+        "\xef\xbc\x8d" => ' ', // U+FF0D fullwidth hyphen-minus
+    ];
+
     /**
      * Card-network prefixes, and the PAN lengths each network actually issues.
      *
@@ -712,6 +742,8 @@ class Event
      */
     public static function containsCardNumber(string $value): bool
     {
+        $value = strtr($value, self::PAN_UNICODE_SEPARATORS);
+
         if (!preg_match_all(self::PAN_RUN_PATTERN, $value, $matches)) {
             return false;
         }
