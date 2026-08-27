@@ -37,7 +37,9 @@ class DebugSession extends Field
     /**
      * @var FormKey
      */
-    private $formKey;
+    // Named apart from the parent's own $formKey: Magento\Backend\Block\Template
+    // declares that protected, and PHP forbids a child narrowing it.
+    private $formKeyProvider;
 
     /**
      * @var Json
@@ -69,7 +71,7 @@ class DebugSession extends Field
 
         $this->session = $session;
         $this->sentLog = $sentLog;
-        $this->formKey = $formKey;
+        $this->formKeyProvider = $formKey;
         $this->json = $json;
     }
 
@@ -149,7 +151,7 @@ class DebugSession extends Field
                 'startUrl' => $this->getUrl('paypercut/telemetry/start'),
                 'stopUrl' => $this->getUrl('paypercut/telemetry/stop'),
                 'statusUrl' => $this->getUrl('paypercut/telemetry/status'),
-                'formKey' => $this->formKey->getFormKey(),
+                'formKey' => $this->formKeyProvider->getFormKey(),
                 'pollSeconds' => TelemetrySession::POLL_INTERVAL_SECONDS,
                 'now' => time(),
                 'initial' => $this->getState(),
