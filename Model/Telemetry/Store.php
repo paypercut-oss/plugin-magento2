@@ -154,7 +154,7 @@ class Store
             return;
         }
 
-        $this->flagManager->saveValue($key, $value);
+        $this->flagManager->saveFlag($key, $value);
     }
 
     /**
@@ -203,7 +203,7 @@ class Store
             return;
         }
 
-        $this->flagManager->saveValue($key, [
+        $this->flagManager->saveFlag($key, [
             'expires_at' => time() + max(1, $ttlSeconds),
             'value' => $value,
         ]);
