@@ -11,6 +11,8 @@ use PHPUnit\Framework\TestCase;
  */
 class EventDenyTest extends TestCase
 {
+    const SECRET = 'ppc_sk_live_9f2b7c4d1e6a8035bd47ce91';
+
     /**
      * @dataProvider deniedFields
      * @param array $fields
@@ -186,14 +188,201 @@ class EventDenyTest extends TestCase
     }
 
     /**
-     * The window scan is deliberately eager: sliding across a long digit run
-     * refuses many 16-digit strings that testing the run whole would pass. No
-     * field this module sends carries an unbroken 13-digit run, and a PAN on
-     * the wire is the worse outcome.
+     * Every network this estate sees is still caught, at every length it issues.
+     *
+     * @dataProvider realCardNumbers
+     * @param string $pan
      */
-    public function testTheWindowScanIsEagerOnLongDigitRuns(): void
+    public function testEveryIssuedCardNumberIsCaught(string $pan): void
     {
-        $this->assertTrue(Event::containsCardNumber('1234567890123456'));
+        $this->assertTrue(Event::containsCardNumber($pan));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function realCardNumbers(): array
+    {
+        return [
+            'visa 13' => ['4222222222222'],
+            'visa 16' => ['4111111111111111'],
+            'visa 19' => ['4035501000000008'],
+            'mastercard' => ['5555555555554444'],
+            'mastercard 2-series' => ['2223003122003222'],
+            'amex' => ['378282246310005'],
+            'discover' => ['6011111111111117'],
+            'diners 14' => ['30569309025904'],
+            'diners 38' => ['38520000023237'],
+            'jcb' => ['3530111333300000'],
+            'unionpay' => ['6212345678901232'],
+            'maestro 16' => ['6759649826438453'],
+            'maestro 19' => ['6304000000000000247'],
+        ];
+    }
+
+    /**
+     * A grouped PAN is a PAN whichever character separates the groups. Only
+     * space and hyphen were recognised, so a value pasted out of a spreadsheet
+     * or a log walked straight through.
+     *
+     * @dataProvider separatedCardNumbers
+     * @param string $value
+     */
+    public function testGroupSeparatorsDoNotHideACardNumber(string $value): void
+    {
+        $this->assertTrue(Event::containsCardNumber($value));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function separatedCardNumbers(): array
+    {
+        return [
+            'space' => ['4111 1111 1111 1111'],
+            'hyphen' => ['4111-1111-1111-1111'],
+            'dot' => ['4111.1111.1111.1111'],
+            'slash' => ['4111/1111/1111/1111'],
+            'underscore' => ['4111_1111_1111_1111'],
+            'comma' => ['4111,1111,1111,1111'],
+            'tab' => ["4111\t1111\t1111\t1111"],
+            'mixed' => ['4111-1111.1111 1111'],
+        ];
+    }
+
+    /**
+     * The scan is gated on an assigned issuer prefix before Luhn runs.
+     *
+     * Without that gate a 16-digit run holds ten candidate windows, each ~10%
+     * likely to pass Luhn by chance, and 60-65% of long numeric order
+     * references were denied. Telemetry a merchant cannot use is as bad an
+     * outcome as one that leaks.
+     */
+    public function testUnassignedIssuerPrefixesAreNotCardNumbers(): void
+    {
+        $this->assertFalse(Event::containsCardNumber('1234567890123456'));
         $this->assertFalse(Event::containsCardNumber('1787250271000'));
+        $this->assertFalse(Event::containsCardNumber('9999999999999999'));
+    }
+
+    /**
+     * The measured false-positive rate on merchant order numbers, pinned.
+     *
+     * Deterministic seed so this is a regression bound, not a flake: before the
+     * issuer gate this stood at 304/500.
+     */
+    public function testRandomSixteenDigitReferencesMostlySurvive(): void
+    {
+        mt_srand(20260827);
+        $denied = 0;
+
+        for ($i = 0; $i < 500; $i++) {
+            $reference = '';
+
+            for ($digit = 0; $digit < 16; $digit++) {
+                $reference .= (string) mt_rand(0, 9);
+            }
+
+            if (Event::containsCardNumber($reference)) {
+                $denied++;
+            }
+        }
+
+        $this->assertLessThan(75, $denied, 'false positives on 16-digit references: ' . $denied . '/500');
+    }
+
+    /**
+     * A credential is quoted mid-string by upstream errors and cut at either
+     * end by the byte clamp, so the comparison cannot anchor to either end.
+     *
+     * @dataProvider secretFragments
+     * @param string $note
+     */
+    public function testAFragmentOfTheStoreSecretIsDenied(string $note): void
+    {
+        $this->assertTrue(Event::isDenied(['attrs' => ['note' => $note]], [self::SECRET]));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function secretFragments(): array
+    {
+        return [
+            'verbatim' => ['upstream rejected ' . self::SECRET],
+            'head only' => ['upstream rejected ' . substr(self::SECRET, 0, 20)],
+            'tail only' => ['upstream rejected ' . substr(self::SECRET, -20)],
+            'middle slice' => ['upstream rejected ' . substr(self::SECRET, 8, 16)],
+            'middle slice, mid-string' => ['saw ' . substr(self::SECRET, 10, 14) . ' in the response'],
+        ];
+    }
+
+    /**
+     * The whole realistic module inventory reaches the wire.
+     *
+     * `auth` and `nonce` as bare substrings dropped real slugs, and a denied
+     * key bins the event its 13 chunk-mates were travelling in.
+     */
+    public function testARealisticModuleInventorySurvives(): void
+    {
+        $inventory = [
+            'ParadoxLabs_Authnetcim' => '4.6.1',
+            'Authorizenet_Acceptjs' => '1.0.0',
+            'Amasty_Nonces' => '1.2.0',
+            'MSP_TwoFactorAuth' => '1.4.2',
+            'Klarna_Ordermanagement' => '9.2.0',
+            'PayPal_Braintree' => '4.6.0',
+            'Smile_ElasticsuiteCore' => '2.11.2',
+            'Dotdigitalgroup_Email' => '4.24.0',
+        ];
+
+        $shipped = [];
+
+        foreach (Event::environmentPlugins($inventory) as $event) {
+            $envelope = $event->envelope(0);
+
+            $this->assertFalse(Event::envelopeDenied($envelope, [self::SECRET]));
+
+            foreach (array_keys($envelope['attrs']) as $key) {
+                $shipped[$key] = true;
+            }
+        }
+
+        foreach (array_keys($inventory) as $slug) {
+            $this->assertArrayHasKey($slug, $shipped, $slug . ' was dropped from the inventory');
+        }
+    }
+
+    /**
+     * A correlation id joins a client event to a server log. Real references
+     * must survive byte for byte; a path or a URL is not a reference.
+     *
+     * @dataProvider correlationIds
+     * @param string $value
+     * @param string $expected
+     */
+    public function testCorrelationIdsAreLosslessButShaped(string $value, string $expected): void
+    {
+        $this->assertSame($expected, Event::correlationId($value));
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function correlationIds(): array
+    {
+        return [
+            'a magento increment id' => ['000000123', '000000123'],
+            'a store-prefixed increment id' => ['2000000045', '2000000045'],
+            'a merchant-shaped reference' => ['MAG-2026/8891', 'MAG-2026/8891'],
+            'a paypercut payment intent' => ['pi_3Ab4Cd5Ef6Gh7Ij', 'pi_3Ab4Cd5Ef6Gh7Ij'],
+            'a dotted reference' => ['store.1.order.8891', 'store.1.order.8891'],
+            'a hash reference' => ['ORDER#8891', 'ORDER#8891'],
+            'path traversal' => ['../../etc/passwd', ''],
+            'a leading dot segment' => ['./relative', ''],
+            'a protocol-relative url' => ['//evil.example/x', ''],
+            'a trailing separator' => ['8891/', ''],
+            'doubled separators' => ['a//b', ''],
+        ];
     }
 }

@@ -38,10 +38,10 @@ class Event
     const MAX_STACK_FRAMES = 8;
 
     /**
-     * Shortest run of a credential that still identifies it, for the clipped
+     * Shortest run of a credential that still identifies it, for the run
      * comparison below. Long enough that ordinary prose cannot collide with it.
      */
-    const MIN_SECRET_PREFIX_BYTES = 12;
+    const MIN_SECRET_RUN_BYTES = 12;
 
     /**
      * How far past MAX_TEXT_BYTES the screen looks before a value is clamped.
@@ -61,6 +61,39 @@ class Event
     const MAX_PAN_DIGITS = 19;
 
     /**
+     * The separators a card number is grouped with when it is written out.
+     *
+     * Wider than space and hyphen: a value pasted from a spreadsheet or a log
+     * arrives dot-, comma-, slash- or underscore-separated, and each of those
+     * hid a whole PAN from the scan.
+     */
+    const PAN_RUN_PATTERN = '/\d(?:[ \t._\/,-]?\d){12,}/';
+
+    /**
+     * Card-network prefixes, and the PAN lengths each network actually issues.
+     *
+     * The scan slides across a digit run, so accepting ANY Luhn-valid 13-19
+     * digit window denies most long numeric order references: a 16-digit run
+     * holds ten candidate windows, each ~10% likely to pass Luhn by chance.
+     * Requiring an assigned issuer prefix at a length that issuer really uses
+     * keeps every real PAN and drops that rate by an order of magnitude.
+     *
+     * @var array<string, int[]>
+     */
+    const CARD_NETWORKS = [
+        '/\A4/' => [13, 16, 19],
+        '/\A(?:5[1-5]|2(?:2[2-9]|[3-6]\d|7[01]|720))/' => [16],
+        '/\A3[47]/' => [15],
+        '/\A(?:6011|64[4-9]|65)/' => [16, 19],
+        '/\A(?:30[0-5]|3[689])/' => [14, 16, 19],
+        '/\A35/' => [16, 19],
+        '/\A62/' => [16, 17, 18, 19],
+        // Maestro is issued across this estate and its BINs fall outside every
+        // range above; the prefixes are specific enough to cost no false denials.
+        '/\A(?:5018|5020|5038|5893|6304|6759|676[123])/' => [13, 14, 15, 16, 17, 18, 19],
+    ];
+
+    /**
      * How deep the deny assertion will walk an envelope before refusing it.
      *
      * The wire shape nests two levels (`error.stack`); the bound only stops a
@@ -71,8 +104,13 @@ class Event
 
     /**
      * Field names that must never appear in an event, whatever their value.
+     *
+     * `auth`, `authorization` and `nonce` match as whole words only. As bare
+     * substrings they dropped real inventory keys — `payment.authorizenet_aim`,
+     * `ParadoxLabs_Authnetcim` — and a denied key bins the whole event.
      */
-    const DENIED_KEY_PATTERN = '/secret|token|password|credential|nonce|auth|_key$/i';
+    const DENIED_KEY_PATTERN =
+        '/secret|token|password|credential|(?<![A-Za-z0-9])(?:auth|authori[sz]ation|nonce)(?![A-Za-z0-9])|_key$/i';
 
     /**
      * Value shapes that must never appear in an event, whatever their field name.
@@ -608,7 +646,7 @@ class Event
                 continue;
             }
 
-            if (strpos($value, $secret) !== false || self::endsWithSecretPrefix($value, $secret)) {
+            if (self::carriesSecret($value, $secret)) {
                 return true;
             }
         }
@@ -629,22 +667,28 @@ class Event
     }
 
     /**
-     * Does the value end in the opening of a secret?
+     * Does the value carry a recognisable run of this secret, anywhere?
      *
-     * text() clamps at MAX_TEXT_BYTES before the assertion ever sees the value,
-     * so a credential sitting near that boundary reaches here with its tail cut
-     * off and the plain strpos() comparison misses it.
+     * Neither end of either string can be assumed: text() clamps at
+     * MAX_TEXT_BYTES so a credential reaches here with its tail cut off, and an
+     * upstream error quotes a credential mid-string, which leaves only a middle
+     * slice. Any run of MIN_SECRET_RUN_BYTES they share is a leak, wherever it
+     * sits in either one.
      *
      * @param string $value
      * @param string $secret
      * @return bool
      */
-    private static function endsWithSecretPrefix(string $value, string $secret): bool
+    private static function carriesSecret(string $value, string $secret): bool
     {
-        $longest = min(strlen($value), strlen($secret) - 1);
+        $length = strlen($secret);
 
-        for ($length = $longest; $length >= self::MIN_SECRET_PREFIX_BYTES; $length--) {
-            if (substr($value, -$length) === substr($secret, 0, $length)) {
+        if ($length <= self::MIN_SECRET_RUN_BYTES) {
+            return strpos($value, $secret) !== false;
+        }
+
+        for ($offset = 0; $offset + self::MIN_SECRET_RUN_BYTES <= $length; $offset++) {
+            if (strpos($value, substr($secret, $offset, self::MIN_SECRET_RUN_BYTES)) !== false) {
                 return true;
             }
         }
@@ -659,7 +703,7 @@ class Event
      * `Card 4111111111111111 was declined` passes it. Card data must never
      * leave a merchant estate, so the client is the right place to enforce it.
      *
-     * Every window of the digit run is tested, not the run as a whole: a PAN
+     * Every offset in the digit run is tested, not the run as a whole: a PAN
      * with one digit stuck to it is still a PAN, and testing only the maximal
      * run means a single adjacent digit defeats the screen.
      *
@@ -668,21 +712,39 @@ class Event
      */
     public static function containsCardNumber(string $value): bool
     {
-        if (!preg_match_all('/\d(?:[ -]?\d){12,}/', $value, $matches)) {
+        if (!preg_match_all(self::PAN_RUN_PATTERN, $value, $matches)) {
             return false;
         }
 
         foreach ($matches[0] as $run) {
-            $digits = (string) preg_replace('/\D/', '', $run);
-            $length = strlen($digits);
+            if (self::runCarriesCardNumber((string) preg_replace('/\D/', '', $run))) {
+                return true;
+            }
+        }
 
-            for ($start = 0; $start + self::MIN_PAN_DIGITS <= $length; $start++) {
-                for ($size = self::MIN_PAN_DIGITS; $size <= self::MAX_PAN_DIGITS; $size++) {
-                    if ($start + $size > $length) {
-                        break;
-                    }
+        return false;
+    }
 
-                    if (self::luhnValid(substr($digits, $start, $size))) {
+    /**
+     * Slide every issuer prefix across one run of digits.
+     *
+     * @param string $digits
+     * @return bool
+     */
+    private static function runCarriesCardNumber(string $digits): bool
+    {
+        $length = strlen($digits);
+
+        for ($offset = 0; $offset + self::MIN_PAN_DIGITS <= $length; $offset++) {
+            $head = substr($digits, $offset, 4);
+
+            foreach (self::CARD_NETWORKS as $prefix => $sizes) {
+                if (!preg_match($prefix, $head)) {
+                    continue;
+                }
+
+                foreach ($sizes as $size) {
+                    if ($offset + $size <= $length && self::luhnValid(substr($digits, $offset, $size))) {
                         return true;
                     }
                 }
@@ -750,8 +812,11 @@ class Event
     public static function identifier(string $value): string
     {
         // \A/\z rather than ^/$: PCRE's `$` accepts a trailing newline, which
-        // would let "pi_1\n" through as identifier-shaped.
-        return preg_match('/\A[A-Za-z0-9_.:-]{1,64}\z/D', $value) ? $value : '';
+        // would let "pi_1\n" through as identifier-shaped. A separator is only
+        // ever between two alphanumerics, so `..` and `../x` are not ids.
+        return preg_match('/\A[A-Za-z0-9](?:[A-Za-z0-9]|[_.:-](?=[A-Za-z0-9])){0,63}\z/D', $value)
+            ? $value
+            : '';
     }
 
     /**
@@ -763,12 +828,18 @@ class Event
      * which must survive intact, while markup, a URL, a bidi override and SQL
      * are not ids and are dropped rather than clamped into the field.
      *
+     * Every separator must sit between two alphanumerics, which keeps real
+     * references lossless while `../../etc/passwd` and `//host/path` are not
+     * ids at all.
+     *
      * @param string $value
      * @return string
      */
     public static function correlationId(string $value): string
     {
-        return preg_match('/\A[A-Za-z0-9_.:\/#-]{1,64}\z/D', $value) ? $value : '';
+        return preg_match('/\A[A-Za-z0-9](?:[A-Za-z0-9]|[_.:\/#-](?=[A-Za-z0-9])){0,63}\z/D', $value)
+            ? $value
+            : '';
     }
 
     /**

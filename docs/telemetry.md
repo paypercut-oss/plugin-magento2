@@ -190,23 +190,43 @@ It screens **keys the same way it screens values** — an attribute name is on t
 wire exactly like an attribute — and it screens **before the byte clamp**, so a
 card number or a credential straddling `MAX_TEXT_BYTES` cannot be clipped into a
 shape the assertion passes; the pre-clamp window travels instead and the event is
-dropped. The card screen slides a 13-19 digit window across each digit run rather
-than testing the run whole, so a PAN with a digit stuck to it is still caught.
-That is deliberately eager: a long arbitrary digit run may be refused, and no
-field this module sends carries one.
+dropped. The card screen slides across each digit run rather than testing the run
+whole, so a PAN with a digit stuck to it is still caught, and it recognises every
+separator a written-out card number is grouped with (space, hyphen, dot, comma,
+slash, underscore, tab), not just space and hyphen.
+
+Each candidate window is gated on an **assigned issuer prefix at a length that
+issuer really uses** (`Event::CARD_NETWORKS`) before Luhn runs. Ungated, a
+16-digit run holds ten candidate windows of length 13-19, each ~10% likely to
+pass Luhn by chance: 304 of 500 random 16-digit references were denied. With the
+gate that is 41 of 500, and every PAN Visa, Mastercard, Amex, Discover, Diners,
+JCB, UnionPay and Maestro issue is still caught. Telemetry a merchant cannot use
+is as bad an outcome as telemetry that leaks.
+
+The literal-secret comparison matches **any `MIN_SECRET_RUN_BYTES` run the value
+and the credential share**, at any offset in either. Neither end can be assumed:
+the byte clamp cuts a credential's tail off, and an upstream error quotes one
+mid-string, which leaves only a middle slice.
 
 The correlation fields are bounded as **ids** (`Event::correlationId()`), not as
 free text: identifier characters plus the `/` and `#` a merchant-shaped Magento
-increment id really uses. Anything else is dropped rather than clamped into the
-field, which keeps markup, URLs and prose out of `order_ref` / `payment_id` /
-`payment_intent_id` on the unauthenticated webhook paths.
+increment id really uses, with every separator required to sit between two
+alphanumerics. `000000123`, `2000000045`, `MAG-2026/8891` and `pi_3Ab4Cd` survive
+byte for byte; `../../etc/passwd` and `//host/path` are not ids and are dropped
+rather than clamped into the field, which keeps traversal, markup, URLs and prose
+out of `order_ref` / `payment_id` / `payment_intent_id` on the unauthenticated
+webhook paths. Dropping a bad id drops the **field only** and still ships the
+event — losing the join to a server log is a support cost, not a privacy one.
 
 The credential list the assertion compares against is read at the **default
 scope and at every website scope**: the credential fields are website-scoped, and
 a list holding the wrong website's key leaves the literal-secret comparison dead
-for that website. A module NAME can also trip the denied-key pattern all by
-itself (`ParadoxLabs_Authnetcim`, `MSP_TwoFactorAuth`); those entries travel as
-`module_<n>` values in their own `environment.plugins` chunk so one such module
+for that website. `auth`, `authorization` and `nonce` are matched in the key
+pattern as **whole words only**: as bare substrings they denied real inventory
+slugs (`ParadoxLabs_Authnetcim`, `Authorizenet_Acceptjs`, `Amasty_Nonces`) and a
+denied key bins the whole chunk they were travelling in. A module NAME can still
+trip the pattern on a broader term (`ParadoxLabs_TokenBase`); those entries travel
+as `module_<n>` values in their own `environment.plugins` chunk so one such module
 cannot cost the whole inventory.
 
 The merchant-facing promise lives in two places that must stay in step —
