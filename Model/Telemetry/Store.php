@@ -127,15 +127,6 @@ class Store
     }
 
     /**
-     * @return void
-     */
-    public function deleteRecord(): void
-    {
-        $this->configWriter->delete(self::RECORD_CONFIG_PATH);
-        $this->reinitableConfig->reinit();
-    }
-
-    /**
      * A durable blob that is never eagerly loaded.
      *
      * @param string $key
