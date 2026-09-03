@@ -126,6 +126,12 @@ $entries = $block->getSentLogEntries();
             </div>
             <details class="paypercut-debug-session__log-raw">
                 <summary><?= $block->escapeHtml(__('Show raw JSON')) ?></summary>
+                <p class="paypercut-debug-session__log-raw-actions">
+                    <button type="button" class="action-secondary paypercut-debug-session__copy"
+                            data-paypercut-copy data-paypercut-copy-target=".paypercut-debug-session__log-raw pre">
+                        <span><?= $block->escapeHtml(__('Copy JSON')) ?></span>
+                    </button>
+                </p>
                 <pre><?= $block->escapeHtml($block->getPrettyJson($entries)) ?></pre>
             </details>
         </details>

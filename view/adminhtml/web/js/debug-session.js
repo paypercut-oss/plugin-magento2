@@ -270,12 +270,15 @@ define([], function () {
             }
         }
 
-        function copySessionId(button) {
-            // Two rows offer a Copy button — the session id and the support
-            // reference — so copy the code beside this one, not the first on
-            // screen.
+        function copyValue(button) {
+            // Several controls offer a Copy button — the session id, the
+            // support reference, the raw log — so copy what this one points
+            // at, not the first code element on screen.
+            var target = button.getAttribute('data-paypercut-copy-target');
             var row = button.closest('p');
-            var node = (row && row.querySelector('code')) || panel.querySelector('[data-paypercut-session-id]');
+            var node = target
+                ? panel.querySelector(target)
+                : (row && row.querySelector('code')) || panel.querySelector('[data-paypercut-session-id]');
             var value = node ? node.textContent : '';
 
             if (!value) {
@@ -355,7 +358,7 @@ define([], function () {
 
             if (copyButton) {
                 event.preventDefault();
-                copySessionId(copyButton);
+                copyValue(copyButton);
             }
         });
 
