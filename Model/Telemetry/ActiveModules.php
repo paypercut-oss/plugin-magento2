@@ -16,9 +16,19 @@ use Magento\Framework\Module\ModuleListInterface;
  * hundred of them, they are implied by `magento_version` in the snapshot, and
  * sending them would crowd the queue with the one thing support never needs to
  * compare between stores.
+ *
+ * A version is never an empty string: the edge discards an attribute whose
+ * value is empty, and it discards the key with it, so a module without a
+ * `setup_version` — which is most of them since 2.3 — would arrive as no
+ * module at all, and naming the module is what this event is for.
  */
 class ActiveModules
 {
+    /**
+     * Stands in for a version the module never declared.
+     */
+    public const UNKNOWN_VERSION = 'unknown';
+
     const CORE_PREFIX = 'Magento_';
 
     /**
@@ -48,7 +58,9 @@ class ActiveModules
                 continue;
             }
 
-            $modules[$name] = (string) ($module['setup_version'] ?? '');
+            $version = trim((string) ($module['setup_version'] ?? ''));
+
+            $modules[$name] = $version === '' ? self::UNKNOWN_VERSION : $version;
         }
 
         ksort($modules);

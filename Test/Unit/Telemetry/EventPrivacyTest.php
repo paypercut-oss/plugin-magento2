@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Paypercut\Payment\Test\Unit\Telemetry;
 
 use Paypercut\Payment\Model\Api\PaypercutApiException;
+use Paypercut\Payment\Model\Telemetry\ActiveModules;
 use Paypercut\Payment\Model\Telemetry\Event;
 use PHPUnit\Framework\TestCase;
 
@@ -107,6 +108,24 @@ class EventPrivacyTest extends TestCase
 
         $this->assertLessThanOrEqual(Event::MAX_ATTRS, count($envelope['attrs']));
         $this->assertArrayHasKey('origin', $envelope['attrs']);
+    }
+
+    /**
+     * Paypercut's edge discards an attribute whose value is empty, and it
+     * discards the key with it. Most Magento modules carry no setup_version
+     * since 2.3, so an empty one meant reporting no module at all.
+     */
+    public function testAModuleWithoutASetupVersionStillNamesItself(): void
+    {
+        $this->assertNotSame('', ActiveModules::UNKNOWN_VERSION);
+
+        $envelope = Event::environmentPlugins([
+            'Vendor_Unversioned' => ActiveModules::UNKNOWN_VERSION,
+            'Vendor_Versioned' => '1.2.3',
+        ])[0]->envelope(0);
+
+        $this->assertSame('unknown', $envelope['attrs']['Vendor_Unversioned']);
+        $this->assertSame('1.2.3', $envelope['attrs']['Vendor_Versioned']);
     }
 
     public function testAModuleNamedLikeASecretDoesNotCostTheWholeInventory(): void
