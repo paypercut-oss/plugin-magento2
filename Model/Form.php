@@ -14,10 +14,18 @@ use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Store\Model\ScopeInterface;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Paypercut\Payment\Model\Api\Client as PaypercutClient;
+use Paypercut\Payment\Model\Api\PaypercutApiException;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Psr\Log\LoggerInterface;
 
 class Form extends \Magento\Framework\Model\AbstractModel
 {
+    /**
+     * Which of the two hosted-checkout entry points this store used.
+     */
+    private const SOURCE = 'payment_form';
+
     /**
      * @var \Magento\Sales\Model\Order|null
      */
@@ -54,6 +62,11 @@ class Form extends \Magento\Framework\Model\AbstractModel
     protected $logger;
 
     /**
+     * @var EventRecorder
+     */
+    protected $recorder;
+
+    /**
      * Form constructor.
      *
      * @param UrlInterface $urlBuilder
@@ -61,19 +74,22 @@ class Form extends \Magento\Framework\Model\AbstractModel
      * @param OrderRepositoryInterface $orderRepository
      * @param ScopeConfigInterface $scopeConfig
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         UrlInterface $urlBuilder,
         PaypercutClient $paypercutClient,
         OrderRepositoryInterface $orderRepository,
         ScopeConfigInterface $scopeConfig,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->urlBuilder = $urlBuilder;
         $this->paypercutClient = $paypercutClient;
         $this->orderRepository = $orderRepository;
         $this->scopeConfig = $scopeConfig;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -118,18 +134,29 @@ class Form extends \Magento\Framework\Model\AbstractModel
             ]);
 
             // Check if this is BNPL or standard card payment
-            if ($paymentMethod === 'paypercut_bnpl') {
-                $response = $this->processBnplPayment($this->order);
-                $redirectUrl = $response['redirect_url'] ?? null;
-                $paypercutId = $response['attempt_id'] ?? null;
-            } else {
-                $response = $this->processCardPayment($this->order);
-                $redirectUrl = $response['url'] ?? null;
-                $paypercutId = $response['id'] ?? null;
+            try {
+                if ($paymentMethod === 'paypercut_bnpl') {
+                    $response = $this->processBnplPayment($this->order);
+                    $redirectUrl = $response['redirect_url'] ?? null;
+                    $paypercutId = $response['attempt_id'] ?? null;
+                } else {
+                    $response = $this->processCardPayment($this->order);
+                    $redirectUrl = $response['url'] ?? null;
+                    $paypercutId = $response['id'] ?? null;
+                }
+            } catch (\Exception $e) {
+                $this->recordCreateFailed($e, (string) $paymentMethod, (string) $this->order->getIncrementId());
+                throw $e;
             }
 
             if (!$redirectUrl) {
                 $this->logger->error('Paypercut Form: Missing URL in response', ['response' => $response]);
+                $this->recorder->record(
+                    Event::failure('checkout.hosted.redirect_missing', 'redirect_absent', [
+                        'source' => self::SOURCE,
+                        'method' => (string) $paymentMethod
+                    ])->about(['order_ref' => (string) $this->order->getIncrementId()])
+                );
                 throw new LocalizedException(__('Invalid response from Paypercut API: missing redirect URL'));
             }
             
@@ -158,6 +185,18 @@ class Form extends \Magento\Framework\Model\AbstractModel
                 'method' => 'GET' // PayPerCut uses direct redirect, not POST form
             ]);
 
+            $this->recorder->record(
+                Event::of('checkout.hosted.redirected', [
+                    'source' => self::SOURCE,
+                    'method' => (string) $paymentMethod,
+                    'order_status' => (string) $this->order->getStatus()
+                ])->about([
+                    'order_ref' => (string) $this->order->getIncrementId(),
+                    'payment_id' => (string) $paypercutId,
+                    'payment_intent_id' => (string) ($response['payment_intent'] ?? '')
+                ])
+            );
+
             $this->logger->info('Paypercut Form: Redirect data prepared', [
                 'order_id' => $this->order->getIncrementId(),
                 'redirect_url' => $redirectUrl,
@@ -173,6 +212,28 @@ class Form extends \Magento\Framework\Model\AbstractModel
             ]);
             throw new LocalizedException(__('Payment processing error: %1', $e->getMessage()));
         }
+    }
+
+    /**
+     * Report a checkout session that could not be created.
+     *
+     * @param \Exception $exception
+     * @param string $paymentMethod
+     * @param string $orderRef
+     * @return void
+     */
+    private function recordCreateFailed(\Exception $exception, string $paymentMethod, string $orderRef): void
+    {
+        $attrs = [
+            'source' => self::SOURCE,
+            'method' => $paymentMethod
+        ];
+
+        $event = $exception instanceof PaypercutApiException
+            ? Event::apiFailure('checkout.hosted.create_failed', $exception, $attrs)
+            : Event::failure('checkout.hosted.create_failed', 'session_create', $attrs, $exception);
+
+        $this->recorder->record($event->about(['order_ref' => $orderRef]));
     }
 
     /**

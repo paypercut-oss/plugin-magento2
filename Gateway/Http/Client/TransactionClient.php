@@ -6,6 +6,7 @@ use Magento\Payment\Gateway\Http\TransferInterface;
 use Magento\Payment\Model\Method\Logger;
 use Magento\Payment\Gateway\ConfigInterface;
 use Magento\Framework\HTTP\Client\Curl;
+use Paypercut\Payment\Model\Support\Environment;
 
 /**
  * Class TransactionClient
@@ -15,9 +16,6 @@ class TransactionClient implements ClientInterface
 {
     const SUCCESS = 1;
     const FAILURE = 0;
-
-    const SANDBOX_URL = 'https://sandbox-api.paypercut.io/v1';
-    const PRODUCTION_URL = 'https://api.paypercut.io/v1';
 
     /**
      * @var Logger
@@ -35,18 +33,26 @@ class TransactionClient implements ClientInterface
     private $curl;
 
     /**
+     * @var Environment
+     */
+    private $environment;
+
+    /**
      * @param Logger $logger
      * @param ConfigInterface $config
      * @param Curl $curl
+     * @param Environment $environment
      */
     public function __construct(
         Logger $logger,
         ConfigInterface $config,
-        Curl $curl
+        Curl $curl,
+        Environment $environment
     ) {
         $this->logger = $logger;
         $this->config = $config;
         $this->curl = $curl;
+        $this->environment = $environment;
     }
 
     /**
@@ -201,7 +207,6 @@ class TransactionClient implements ClientInterface
      */
     private function getApiUrl()
     {
-        $environment = $this->config->getValue('environment');
-        return $environment === 'production' ? self::PRODUCTION_URL : self::SANDBOX_URL;
+        return $this->environment->getApiBaseUri() . 'v1';
     }
 }

@@ -14,6 +14,8 @@ A comprehensive payment integration module for Magento 2 that provides card paym
 - [Subscription System](#subscription-system)
 - [API Integration](#api-integration)
 - [Frontend Components](#frontend-components)
+- [Debug sessions (client telemetry)](#debug-sessions-client-telemetry)
+- [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Security](#security)
 
@@ -96,7 +98,7 @@ Navigate to **Stores > Configuration > Sales > Payment Methods** in the Magento 
 | **Enabled** | Enable/disable the payment method |
 | **Title** | Payment method title shown at checkout |
 | **Description** | Description shown to customers |
-| **Environment** | Sandbox or Production |
+| **Environment** | `Production`, `Stage` or `Development`. Selects the Paypercut API host **and** the telemetry edge host — see [Debug sessions](#debug-sessions-client-telemetry) |
 | **Secret Key** | Your Paypercut secret key |
 | **Payment Action** | `authorize_capture` (immediate charge) or `authorize` (manual capture) |
 | **New Order Status** | Order status after successful payment |
@@ -169,11 +171,16 @@ Paypercut/Payment/
 │   ├── PaymentMethod.php         # Card payment method
 │   ├── BnplPaymentMethod.php     # BNPL payment method
 │   ├── Api/Client.php            # API client
+│   ├── Support/Environment.php   # Environment -> API and telemetry hosts
+│   ├── Telemetry/                # Debug sessions (see docs/telemetry.md)
 │   ├── Ui/                       # Checkout UI providers
 │   └── Subscription/             # Subscription management
 ├── Observer/                     # Event observers
 ├── Setup/Patch/Data/             # Data patches
+├── Test/Unit/                    # PHPUnit suite (no Magento application needed)
+├── docs/telemetry.md             # Debug session event catalogue
 ├── etc/                          # Configuration files
+│   ├── acl.xml                   # Paypercut_Payment::telemetry permission
 │   ├── config.xml                # Default config
 │   ├── di.xml                    # Dependency injection
 │   ├── system.xml                # Admin configuration
@@ -251,6 +258,8 @@ The module uses Magento's payment gateway framework with the following commands:
 | `Model\Subscription\SubscriptionManager` | Subscription lifecycle management |
 | `Gateway\Request\AuthorizationRequest` | Builds authorization requests |
 | `Gateway\Response\TxnIdHandler` | Handles transaction responses |
+| `Model\Support\Environment` | Resolves the API and telemetry hosts from one environment value |
+| `Model\Telemetry\*` | Debug sessions — see [docs/telemetry.md](docs/telemetry.md) |
 
 ---
 
@@ -514,9 +523,21 @@ $this->subscriptionManager->resumeSubscription($subscriptionId);
 
 ### API Endpoints
 
-**Standard Payment API:**
-- Base URL (Production): `https://api.paypercut.io/v1`
-- Base URL (Sandbox): `https://sandbox-api.paypercut.io/v1`
+**Standard Payment API** — the host comes from the **Environment** setting:
+
+| Environment | Base URL |
+|---|---|
+| `production` | `https://api.paypercut.io/v1` |
+| `stage` | `https://api.stage.paypercut.net/v1` |
+| `dev` | `https://api.dev.paypercut.net/v1` |
+
+An unset or unrecognised environment falls back to production, so an existing
+store keeps taking payments. The legacy `sandbox` value stores held before this
+setting became real resolves to `production` — sandbox and production always
+pointed at the same payment API host, so it is production under an older name.
+**Upgrade note:** BNPL is the one path where the two differed; a store still
+holding `sandbox` now reaches the production BNPL API rather than the old
+internal host, and should confirm its BNPL credentials against production.
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -527,9 +548,8 @@ $this->subscriptionManager->resumeSubscription($subscriptionId);
 | `/transactions/void` | POST | Void transaction |
 | `/transactions/refund` | POST | Refund transaction |
 
-**BNPL API:**
-- Base URL (Production): `https://api.paypercut.io/bnpl/v1`
-- Base URL (Sandbox): `https://sandbox-api.paypercut.io/bnpl/v1`
+**BNPL API** — `{api base}/bnpl/v1`, resolved from the same **Environment**
+setting.
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -583,6 +603,62 @@ The module supports:
 | `vault.html` | Saved cards display |
 
 ---
+
+## Debug sessions (client telemetry)
+
+A merchant-started, time-boxed diagnostic feed, off by default. In
+**Stores → Configuration → Sales → Payment Methods → Paypercut Payment → Debug
+Session**, an administrator with the `Paypercut_Payment::telemetry` permission
+can start a session that runs for about an hour and then stops by itself.
+Nothing is sent to Paypercut until they do.
+
+The full event catalogue, the storage map and the structural blind spots are in
+[docs/telemetry.md](docs/telemetry.md).
+
+### What is shared
+
+Module, Magento, PHP and theme versions; the third-party modules enabled on this
+store and their versions; how this store has the Paypercut payment methods
+configured (which options are switched on — never the values of your
+credentials); a record of each checkout, refund and payment notification the
+module handled and whether it succeeded, identified by Magento order number and
+Paypercut payment reference; when something fails, the type of error, the file
+and line it came from, and which module or theme raised it — never error text
+written by Magento itself, which can quote your order data back; and when the session started
+and stopped.
+
+**Not shared:** customer names, email addresses, billing or shipping addresses,
+order totals, line items, payment card data, the reason text you type when
+issuing a refund, or any API key, webhook secret or password.
+
+Your API key is never sent to the telemetry service. It is used once, over
+HTTPS, to obtain a short-lived diagnostic token from the Paypercut API this store
+is connected to — api.paypercut.io for a production store.
+
+Paypercut keeps this diagnostic data for 30 days.
+
+### Environment pairing
+
+The **Environment** setting picks both the payment API host and the telemetry
+edge host. A token minted for one environment is rejected by every other
+environment's edge, so a store whose environment is unset or unrecognised gets
+**no debug session at all** rather than a confusing one — while its payments
+continue against production. The legacy `sandbox` value resolves to
+`production`, so those stores stay paired rather than losing telemetry.
+
+## Testing
+
+```bash
+curl -sSLO https://phar.phpunit.de/phpunit-10.phar
+php phpunit-10.phar
+```
+
+The suite runs without Composer and without a Magento application: it covers the
+pure parts of the telemetry code — the deny assertion, the environment pairing,
+the batch splitter, the flusher's decision table, the mint clock arithmetic, and
+the guards that fail the build when the merchant-facing disclosure or the event
+catalogue drift. Everything else in this module still needs a manual smoke test
+against a real store.
 
 ## Troubleshooting
 

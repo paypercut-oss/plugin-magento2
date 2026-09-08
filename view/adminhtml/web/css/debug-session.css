@@ -1,0 +1,106 @@
+.paypercut-debug-session {
+    max-width: 760px;
+    padding: 12px 0;
+}
+
+.paypercut-debug-session__lead {
+    font-weight: 600;
+    margin: 0 0 6px;
+}
+
+.paypercut-debug-session__help,
+.paypercut-debug-session__meta,
+.paypercut-debug-session__counters {
+    color: #676056;
+    margin: 0 0 6px;
+}
+
+.paypercut-debug-session__dot {
+    background: #79a22e;
+    border-radius: 50%;
+    display: inline-block;
+    height: 9px;
+    margin-right: 6px;
+    width: 9px;
+}
+
+.paypercut-debug-session__actions {
+    margin: 12px 0 0;
+}
+
+.paypercut-debug-session__disclosure,
+.paypercut-debug-session__log {
+    background: #f5f5f5;
+    border: 1px solid #d6d6d6;
+    border-radius: 3px;
+    margin: 10px 0;
+    padding: 10px 12px;
+}
+
+.paypercut-debug-session__disclosure summary,
+.paypercut-debug-session__log summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.paypercut-debug-session__log-scroll {
+    max-height: 320px;
+    overflow: auto;
+}
+
+.paypercut-debug-session__log-table {
+    width: 100%;
+}
+
+.paypercut-debug-session__log-raw pre {
+    max-height: 320px;
+    overflow: auto;
+}
+
+.paypercut-modal[hidden] {
+    display: none;
+}
+
+.paypercut-modal__backdrop {
+    background: rgba(0, 0, 0, 0.4);
+    inset: 0;
+    position: fixed;
+    z-index: 900;
+}
+
+.paypercut-modal__dialog {
+    background: #fff;
+    border-radius: 3px;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+    left: 50%;
+    max-height: 80vh;
+    max-width: 640px;
+    overflow: auto;
+    padding: 20px;
+    position: fixed;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 90%;
+    z-index: 901;
+}
+
+.paypercut-modal__header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.paypercut-modal__close {
+    background: none;
+    border: 0;
+    cursor: pointer;
+    font-size: 22px;
+    line-height: 1;
+}
+
+.paypercut-modal__footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 16px;
+}

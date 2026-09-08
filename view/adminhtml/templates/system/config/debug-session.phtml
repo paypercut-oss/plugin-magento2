@@ -1,0 +1,173 @@
+<?php
+/**
+ * Debug session panel.
+ *
+ * @var \Paypercut\Payment\Block\Adminhtml\System\Config\DebugSession $block
+ */
+$state = $block->getState();
+$entries = $block->getSentLogEntries();
+?>
+<div class="paypercut-debug-session" id="paypercut-debug-session">
+    <div id="paypercut-debug-session-status" class="message" role="status" aria-live="polite" style="display:none"></div>
+
+    <div class="paypercut-debug-session__state" data-paypercut-state="idle" <?= $state['state'] === 'idle' ? '' : 'hidden' ?>>
+        <p class="paypercut-debug-session__lead">
+            <?= $block->escapeHtml(__('Off. Nothing is sent to Paypercut until you start a session.')) ?>
+        </p>
+        <p class="paypercut-debug-session__help">
+            <?= $block->escapeHtml(__('Turn on detailed diagnostics for about an hour so Paypercut support can see what your store is doing. The session ends by itself.')) ?>
+        </p>
+        <?= $block->fetchView($block->getTemplateFile('Paypercut_Payment::system/config/debug-session-disclosure.phtml')) ?>
+        <p class="paypercut-debug-session__actions">
+            <button type="button" class="action-primary paypercut-debug-session__start">
+                <span><?= $block->escapeHtml(__('Start debug session')) ?></span>
+            </button>
+        </p>
+    </div>
+
+    <div class="paypercut-debug-session__state" data-paypercut-state="running" <?= $state['state'] === 'running' ? '' : 'hidden' ?>>
+        <p class="paypercut-debug-session__lead">
+            <span class="paypercut-debug-session__dot" aria-hidden="true"></span>
+            <?= $block->escapeHtml(__('Debug session running —')) ?>
+            <span class="paypercut-debug-session__countdown" data-paypercut-countdown>—</span>
+            <?= $block->escapeHtml(__('remaining')) ?>
+        </p>
+        <p class="paypercut-debug-session__meta">
+            <?= $block->escapeHtml(__('Started by')) ?>
+            <span data-paypercut-started-by><?= $block->escapeHtml($state['started_by_name']) ?></span>
+            ·
+            <?= $block->escapeHtml(__('ends at')) ?>
+            <span data-paypercut-ends-at><?= $block->escapeHtml($block->getEndsAt()) ?></span>
+        </p>
+        <p class="paypercut-debug-session__meta">
+            <?= $block->escapeHtml(__('Session ID')) ?>
+            <code data-paypercut-session-id><?= $block->escapeHtml($state['session_id']) ?></code>
+            <button type="button" class="action-secondary paypercut-debug-session__copy" data-paypercut-copy>
+                <span><?= $block->escapeHtml(__('Copy')) ?></span>
+            </button>
+        </p>
+        <p class="paypercut-debug-session__counters">
+            <span data-paypercut-sent><?= (int) $state['events_sent'] ?></span>
+            <?= $block->escapeHtml(__('events sent')) ?>
+            ·
+            <span data-paypercut-dropped><?= (int) $state['events_dropped'] ?></span>
+            <?= $block->escapeHtml(__('dropped (approximate)')) ?>
+        </p>
+        <p class="paypercut-debug-session__actions">
+            <button type="button" class="action-secondary paypercut-debug-session__stop">
+                <span><?= $block->escapeHtml(__('Stop now')) ?></span>
+            </button>
+        </p>
+    </div>
+
+    <div class="paypercut-debug-session__state" data-paypercut-state="ended" <?= $state['state'] === 'ended' ? '' : 'hidden' ?>>
+        <p class="paypercut-debug-session__lead">
+            <strong><?= $block->escapeHtml(__('Debug session ended.')) ?></strong>
+            <?= $block->escapeHtml(__('Paypercut stops receiving data from this store.')) ?>
+        </p>
+        <p class="paypercut-debug-session__meta">
+            <?= $block->escapeHtml(__('Last session ID')) ?>
+            <code data-paypercut-session-id><?= $block->escapeHtml($state['session_id']) ?></code>
+            <?= $block->escapeHtml(__('— quote this in your support ticket.')) ?>
+            <button type="button" class="action-secondary paypercut-debug-session__copy" data-paypercut-copy>
+                <span><?= $block->escapeHtml(__('Copy')) ?></span>
+            </button>
+        </p>
+        <p class="paypercut-debug-session__actions">
+            <button type="button" class="action-primary paypercut-debug-session__start">
+                <span><?= $block->escapeHtml(__('Start debug session')) ?></span>
+            </button>
+        </p>
+    </div>
+
+    <div class="paypercut-debug-session__state" data-paypercut-state="failed" <?= $state['state'] === 'failed' ? '' : 'hidden' ?>>
+        <div class="message message-error">
+            <span data-paypercut-failed-message><?= $block->escapeHtml($state['message']) ?></span>
+        </div>
+        <p class="paypercut-debug-session__meta" data-paypercut-reference <?= $state['trace_id'] === '' ? 'hidden' : '' ?>>
+            <?= $block->escapeHtml(__('Support reference')) ?>
+            <code data-paypercut-trace-id><?= $block->escapeHtml($state['trace_id']) ?></code>
+            <button type="button" class="action-secondary paypercut-debug-session__copy" data-paypercut-copy>
+                <span><?= $block->escapeHtml(__('Copy')) ?></span>
+            </button>
+        </p>
+        <p class="paypercut-debug-session__actions">
+            <button type="button" class="action-primary paypercut-debug-session__start">
+                <span><?= $block->escapeHtml(__('Try again')) ?></span>
+            </button>
+        </p>
+    </div>
+
+    <?php if (!empty($entries)) : ?>
+        <details class="paypercut-debug-session__log" data-paypercut-log>
+            <summary><?= $block->escapeHtml(__('Show the %1 event(s) sent', count($entries))) ?></summary>
+            <p class="paypercut-debug-session__help">
+                <?= $block->escapeHtml(__('Exactly what was sent to Paypercut, newest last. The most recent %1 are kept on this store and cleared when a new session starts.', $block->getMaxLogEntries())) ?>
+            </p>
+            <div class="paypercut-debug-session__log-scroll">
+                <table class="data-grid paypercut-debug-session__log-table">
+                    <thead>
+                    <tr>
+                        <th><?= $block->escapeHtml(__('Time (UTC)')) ?></th>
+                        <th><?= $block->escapeHtml(__('Event')) ?></th>
+                        <th><?= $block->escapeHtml(__('Detail')) ?></th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($entries as $entry) : ?>
+                        <tr>
+                            <td><code><?= $block->escapeHtml((string) ($entry['occurred_at'] ?? '—')) ?></code></td>
+                            <td><code><?= $block->escapeHtml((string) ($entry['event'] ?? '—')) ?></code></td>
+                            <td><?= $block->escapeHtml($block->getEventDetail($entry)) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <details class="paypercut-debug-session__log-raw">
+                <summary><?= $block->escapeHtml(__('Show raw JSON')) ?></summary>
+                <p class="paypercut-debug-session__log-raw-actions">
+                    <button type="button" class="action-secondary paypercut-debug-session__copy"
+                            data-paypercut-copy data-paypercut-copy-target=".paypercut-debug-session__log-raw pre">
+                        <span><?= $block->escapeHtml(__('Copy JSON')) ?></span>
+                    </button>
+                </p>
+                <pre><?= $block->escapeHtml($block->getPrettyJson($entries)) ?></pre>
+            </details>
+        </details>
+    <?php endif; ?>
+</div>
+
+<div class="paypercut-modal" id="paypercut-debug-session-modal" hidden>
+    <div class="paypercut-modal__backdrop" data-paypercut-close-debug-session-modal></div>
+    <div class="paypercut-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="paypercut-debug-session-modal-title">
+        <div class="paypercut-modal__header">
+            <h4 id="paypercut-debug-session-modal-title"><?= $block->escapeHtml(__('Start a debug session?')) ?></h4>
+            <button type="button" class="paypercut-modal__close" data-paypercut-close-debug-session-modal
+                    aria-label="<?= $block->escapeHtmlAttr(__('Close')) ?>">&times;</button>
+        </div>
+        <div class="paypercut-modal__body">
+            <p><?= $block->escapeHtml(__('While the session is running, this store sends the diagnostic information below to Paypercut so support can see what is happening.')) ?></p>
+            <?= $block->fetchView($block->getTemplateFile('Paypercut_Payment::system/config/debug-session-disclosure.phtml')) ?>
+            <p class="paypercut-modal__help">
+                <?= $block->escapeHtml(__('The session lasts about 60 minutes and then stops by itself. You can stop it sooner at any time.')) ?>
+            </p>
+        </div>
+        <div class="paypercut-modal__footer">
+            <button type="button" class="action-secondary" data-paypercut-close-debug-session-modal>
+                <span><?= $block->escapeHtml(__('Cancel')) ?></span>
+            </button>
+            <button type="button" class="action-primary paypercut-debug-session-modal__confirm">
+                <span><?= $block->escapeHtml(__('Start session')) ?></span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<script type="text/x-magento-init">
+{
+    "#paypercut-debug-session": {
+        "Paypercut_Payment/js/debug-session": <?= /* @noEscape */ $block->getJsConfig() ?>
+    }
+}
+</script>

@@ -20,7 +20,7 @@
                 <can_void>1</can_void>
                 <can_cancel>1</can_cancel>
                 <order_status>pending_payment</order_status>
-                <environment>sandbox</environment>
+                <environment>production</environment>
                 <allowspecific>0</allowspecific>
                 <sort_order>10</sort_order>
                 <api_key />

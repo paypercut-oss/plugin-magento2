@@ -9,6 +9,8 @@ use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Sales\Model\Order;
 use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
 use Paypercut\Payment\Cron\BnplStatusCheck;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -18,6 +20,8 @@ use Psr\Log\LoggerInterface;
  */
 class BnplCallback implements ActionInterface, CsrfAwareActionInterface
 {
+    const WEBHOOK = 'bnpl.callback';
+
     /**
      * @var RequestInterface
      */
@@ -44,24 +48,32 @@ class BnplCallback implements ActionInterface, CsrfAwareActionInterface
     private $logger;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param RequestInterface $request
      * @param JsonFactory $jsonFactory
      * @param OrderCollectionFactory $orderCollectionFactory
      * @param BnplStatusCheck $bnplStatusCheck
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         RequestInterface $request,
         JsonFactory $jsonFactory,
         OrderCollectionFactory $orderCollectionFactory,
         BnplStatusCheck $bnplStatusCheck,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->request = $request;
         $this->jsonFactory = $jsonFactory;
         $this->orderCollectionFactory = $orderCollectionFactory;
         $this->bnplStatusCheck = $bnplStatusCheck;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -101,6 +113,12 @@ class BnplCallback implements ActionInterface, CsrfAwareActionInterface
                     'params' => $params,
                     'body' => $body,
                 ]);
+                $this->recorder->record(
+                    Event::failure('webhook.payload_invalid', 'missing_attempt_id', [
+                        'webhook' => self::WEBHOOK,
+                        'http_status' => 400
+                    ])
+                );
                 $result->setHttpResponseCode(400);
                 $result->setData(['success' => false, 'message' => 'Missing attempt_id']);
                 return $result;
@@ -111,12 +129,25 @@ class BnplCallback implements ActionInterface, CsrfAwareActionInterface
                 'method' => $method,
             ]);
 
+            $this->recorder->record(
+                Event::of('webhook.received', ['type' => self::WEBHOOK])
+                    ->about(['payment_id' => (string) $attemptId])
+            );
+
             $order = $this->getOrderByAttemptId($attemptId);
 
             if (!$order) {
                 $this->logger->warning('Paypercut: BNPL callback - order not found', [
                     'attempt_id' => $attemptId,
                 ]);
+                $this->recorder->record(
+                    Event::failure('webhook.unresolved', 'order_not_found', [
+                        'webhook' => self::WEBHOOK,
+                        'http_status' => 404,
+                        'has_client_reference_id' => false,
+                        'has_metadata' => false
+                    ])->about(['payment_id' => (string) $attemptId])
+                );
                 $result->setHttpResponseCode(404);
                 $result->setData(['success' => false, 'message' => 'Order not found']);
                 return $result;
@@ -140,6 +171,12 @@ class BnplCallback implements ActionInterface, CsrfAwareActionInterface
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+            $this->recorder->record(
+                Event::failure('webhook.error', 'http_500', [
+                    'webhook' => self::WEBHOOK,
+                    'http_status' => 500
+                ], $e)
+            );
             $result->setHttpResponseCode(500);
             $result->setData(['success' => false, 'message' => 'Internal error']);
         }

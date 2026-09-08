@@ -5,22 +5,20 @@ use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Encryption\EncryptorInterface;
 use Magento\Framework\HTTP\Client\Curl;
 use Magento\Store\Model\ScopeInterface;
+use Paypercut\Payment\Model\Support\Environment;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
+use Paypercut\Payment\Model\Telemetry\TelemetrySession;
 use Psr\Log\LoggerInterface;
 
 class Client
 {
-    // Standard payments API URLs (also used for subscriptions)
-    //const SANDBOX_API_URL = 'https://sandbox-api.paypercut.io/v1';
-    const SANDBOX_API_URL = 'https://api.paypercut.io/v1';
-    const PRODUCTION_API_URL = 'https://api.paypercut.io/v1';
-
-    // BNPL API URLs
-    // @see https://docs.paypercut.io/
-    //const SANDBOX_BNPL_API_URL = 'https://sandbox-api.paypercut.io/bnpl/v1';
+    // BNPL is out of scope for telemetry, so its hosts stay exactly as they were
+    // rather than following the environment the debug session introduced.
     const SANDBOX_BNPL_API_URL = 'https://bnpl-gw.bender.paypercut.net/v1';
     const PRODUCTION_BNPL_API_URL = 'https://api.paypercut.io/bnpl/v1';
 
-    const CONFIG_PATH_ENVIRONMENT = 'payment/paypercut_card/environment';
+    const CONFIG_PATH_ENVIRONMENT = Environment::CONFIG_PATH_ENVIRONMENT;
     const CONFIG_PATH_SECRET_KEY = 'payment/paypercut_card/secret_key';
     const CONFIG_PATH_DEBUG = 'payment/paypercut_card/debug';
     const CONFIG_PATH_BNPL_SECRET_KEY = 'payment/paypercut_bnpl/secret_key';
@@ -47,21 +45,37 @@ class Client
     private $logger;
 
     /**
+     * @var Environment
+     */
+    private $environment;
+
+    /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param ScopeConfigInterface $scopeConfig
      * @param EncryptorInterface $encryptor
      * @param Curl $curl
      * @param LoggerInterface $logger
+     * @param Environment $environment
+     * @param EventRecorder $recorder
      */
     public function __construct(
         ScopeConfigInterface $scopeConfig,
         EncryptorInterface $encryptor,
         Curl $curl,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        Environment $environment,
+        EventRecorder $recorder
     ) {
         $this->scopeConfig = $scopeConfig;
         $this->encryptor = $encryptor;
         $this->curl = $curl;
         $this->logger = $logger;
+        $this->environment = $environment;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -81,7 +95,7 @@ class Client
             'currency' => $data['currency'] ?? null
         ]);
         
-        return $this->request('POST', $endpoint, $data);
+        return $this->request('POST', $endpoint, $data, 'create_checkout');
     }
 
     /**
@@ -95,7 +109,7 @@ class Client
     {
         $endpoint = $this->getApiUrl() . '/checkouts/' . $checkoutId;
         
-        return $this->request('GET', $endpoint);
+        return $this->request('GET', $endpoint, null, 'get_checkout');
     }
 
     /**
@@ -120,7 +134,7 @@ class Client
             'total_amount' => $data['purchase_details']['shopping_card']['total_amount'] ?? null
         ]);
         
-        return $this->requestBnpl('POST', $endpoint, $data);
+        return $this->requestBnpl('POST', $endpoint, $data, 'create_bnpl_attempt');
     }
 
     /**
@@ -134,7 +148,7 @@ class Client
     {
         $endpoint = $this->getBnplApiUrl() . '/bnpl/attempt/' . $attemptId;
 
-        return $this->requestBnpl('GET', $endpoint);
+        return $this->requestBnpl('GET', $endpoint, null, 'get_bnpl_attempt');
     }
 
     /**
@@ -157,7 +171,7 @@ class Client
             'endpoint' => $endpoint
         ]);
 
-        return $this->requestBnpl('GET', $endpoint);
+        return $this->requestBnpl('GET', $endpoint, null, 'get_bnpl_attempt_status');
     }
 
     /**
@@ -182,7 +196,7 @@ class Client
             'reason' => $data['reason'] ?? null
         ]);
         
-        return $this->request('POST', $endpoint, $data);
+        return $this->request('POST', $endpoint, $data, 'create_refund');
     }
 
     /**
@@ -191,19 +205,23 @@ class Client
      * @param string $method
      * @param string $endpoint
      * @param array|null $data
+     * @param string $context
      * @return array
      * @throws \Exception
      */
-    private function request(string $method, string $endpoint, ?array $data = null): array
+    private function request(string $method, string $endpoint, ?array $data = null, string $context = ''): array
     {
         $secretKey = $this->getSecretKey();
         
         if (empty($secretKey)) {
             $this->logger->error('Paypercut: Secret key is not configured');
+            $this->recorder->record(
+                Event::failure('api.request_failed', 'no_api_secret', ['api_context' => $context])
+            );
             throw new \Exception('Paypercut secret key is not configured');
         }
 
-        return $this->doRequest($method, $endpoint, $data, $secretKey);
+        return $this->doRequest($method, $endpoint, $data, $secretKey, $context);
     }
 
     /**
@@ -212,19 +230,23 @@ class Client
      * @param string $method
      * @param string $endpoint
      * @param array|null $data
+     * @param string $context
      * @return array
      * @throws \Exception
      */
-    private function requestBnpl(string $method, string $endpoint, ?array $data = null): array
+    private function requestBnpl(string $method, string $endpoint, ?array $data = null, string $context = ''): array
     {
         $secretKey = $this->getBnplSecretKey();
         
         if (empty($secretKey)) {
             $this->logger->error('Paypercut: BNPL secret key is not configured');
+            $this->recorder->record(
+                Event::failure('api.request_failed', 'no_api_secret', ['api_context' => $context])
+            );
             throw new \Exception('Paypercut BNPL secret key is not configured');
         }
 
-        return $this->doRequest($method, $endpoint, $data, $secretKey);
+        return $this->doRequest($method, $endpoint, $data, $secretKey, $context);
     }
 
     /**
@@ -234,10 +256,11 @@ class Client
      * @param string $endpoint
      * @param array|null $data
      * @param string $secretKey
+     * @param string $context
      * @return array
      * @throws \Exception
      */
-    private function doRequest(string $method, string $endpoint, ?array $data, string $secretKey): array
+    private function doRequest(string $method, string $endpoint, ?array $data, string $secretKey, string $context = ''): array
     {
         $this->logger->info('Paypercut API Request', [
             'method' => $method,
@@ -245,6 +268,8 @@ class Client
             'has_secret_key' => !empty($secretKey),
             'data' => $data
         ]);
+
+        $started = microtime(true);
 
         try {
             // Set headers exactly as in working Postman request
@@ -291,6 +316,7 @@ class Client
             ]);
 
             $result = json_decode($response, true);
+            $durationMs = (int) round((microtime(true) - $started) * 1000);
 
             if ($statusCode < 200 || $statusCode >= 300) {
                 // Log full error details for debugging
@@ -310,18 +336,131 @@ class Client
                     ?? $result['detail']
                     ?? $response
                     ?: 'Unknown error (HTTP ' . $statusCode . ')';
-                throw new \Exception('Paypercut API error: ' . $errorMessage);
+
+                throw $this->rejected(
+                    'Paypercut API error: ' . $errorMessage,
+                    $statusCode,
+                    is_array($result) ? $result : null,
+                    $context,
+                    $durationMs
+                );
+            }
+
+            if (!is_array($result) && trim((string) $response) !== '') {
+                // Byte count only: the body is the one thing not to report.
+                $this->recorder->record(
+                    Event::failure('api.response_unparsable', 'decode_failed', [
+                        'api_context' => $context,
+                        'body_bytes' => strlen((string) $response)
+                    ])
+                );
+            }
+
+            // Only slow calls are timed as events. Timing every call would fill
+            // the queue with the requests nobody is investigating.
+            if ($durationMs >= TelemetrySession::SLOW_REQUEST_MS) {
+                $this->recorder->record(
+                    Event::of('api.request_slow', [
+                        'api_context' => $context,
+                        'method' => $method,
+                        'duration_ms' => $durationMs
+                    ])
+                );
             }
 
             return $result ?: [];
-            
-        } catch (\Exception $e) {
+
+        } catch (PaypercutApiException $e) {
             $this->logger->error('Paypercut API Exception', [
                 'message' => $e->getMessage(),
                 'endpoint' => $endpoint
             ]);
             throw $e;
+        } catch (\Exception $e) {
+            $this->logger->error('Paypercut API Exception', [
+                'message' => $e->getMessage(),
+                'endpoint' => $endpoint
+            ]);
+
+            $this->recordTransportFailure($e, $context, (int) round((microtime(true) - $started) * 1000));
+
+            throw $e;
         }
+    }
+
+    /**
+     * Build the exception for a rejected request, and report it.
+     *
+     * A body that parsed is a structured platform error and carries a code, a
+     * param and a trace id; one that did not is reported as such, because the
+     * difference between "Paypercut refused this" and "something in front of
+     * Paypercut answered" is the whole diagnosis.
+     *
+     * @param string $message
+     * @param int $statusCode
+     * @param array|null $body
+     * @param string $context
+     * @param int $durationMs
+     * @return PaypercutApiException
+     */
+    private function rejected(
+        string $message,
+        int $statusCode,
+        ?array $body,
+        string $context,
+        int $durationMs
+    ): PaypercutApiException {
+        $exception = PaypercutApiException::fromBody($message, $statusCode, $body ?? []);
+
+        $this->recorder->record(
+            $body !== null
+                ? Event::apiFailure('api.request_failed', $exception, [
+                    'api_context' => $context,
+                    'duration_ms' => $durationMs
+                ])
+                : Event::failure('api.request_failed', 'http_' . $statusCode, [
+                    'api_context' => $context,
+                    'http_status' => $statusCode,
+                    'body_parsable' => false,
+                    'duration_ms' => $durationMs
+                ])
+        );
+
+        return $exception;
+    }
+
+    /**
+     * Report a request that never got an answer.
+     *
+     * A connect failure that took the full timeout is a network black hole; one
+     * that returned at once is DNS or a refused port — which is why the
+     * duration travels with every one of these.
+     *
+     * @param \Exception $exception
+     * @param string $context
+     * @param int $durationMs
+     * @return void
+     */
+    private function recordTransportFailure(\Exception $exception, string $context, int $durationMs): void
+    {
+        // Magento's cURL wrapper collapses every libcurl failure into one
+        // exception, so the reason is recovered from its message.
+        $connectFailure = (bool) preg_match(
+            '/could not resolve|failed to connect|connection refused|connect\(\) timed out|ssl connect error/i',
+            $exception->getMessage()
+        );
+
+        $this->recorder->record(
+            Event::failure(
+                'api.request_failed',
+                $connectFailure ? 'connect' : 'transport',
+                [
+                    'api_context' => $context,
+                    'duration_ms' => $durationMs
+                ],
+                $exception
+            )
+        );
     }
 
     /**
@@ -374,11 +513,7 @@ class Client
      */
     private function getApiUrl(): string
     {
-        $environment = $this->scopeConfig->getValue(
-            self::CONFIG_PATH_ENVIRONMENT,
-            ScopeInterface::SCOPE_STORE
-        );
-        return $environment === 'production' ? self::PRODUCTION_API_URL : self::SANDBOX_API_URL;
+        return $this->environment->getApiBaseUri() . 'v1';
     }
 
     /**
@@ -392,6 +527,7 @@ class Client
             self::CONFIG_PATH_ENVIRONMENT,
             ScopeInterface::SCOPE_STORE
         );
+
         return $environment === 'production' ? self::PRODUCTION_BNPL_API_URL : self::SANDBOX_BNPL_API_URL;
     }
 
@@ -412,7 +548,7 @@ class Client
             'items_count' => count($data['items'] ?? [])
         ]);
         
-        return $this->request('POST', $endpoint, $data);
+        return $this->request('POST', $endpoint, $data, 'create_subscription');
     }
 
     /**
@@ -426,7 +562,7 @@ class Client
     {
         $endpoint = $this->getApiUrl() . '/subscriptions/' . $subscriptionId;
         
-        return $this->request('GET', $endpoint);
+        return $this->request('GET', $endpoint, null, 'get_subscription');
     }
 
     /**
@@ -446,7 +582,7 @@ class Client
             'data' => $data
         ]);
         
-        return $this->doRequest('PATCH', $endpoint, $data, $this->getSecretKey());
+        return $this->doRequest('PATCH', $endpoint, $data, $this->getSecretKey(), 'update_subscription');
     }
 
     /**
@@ -466,7 +602,7 @@ class Client
             'details' => $cancellationDetails
         ]);
         
-        return $this->request('POST', $endpoint, $cancellationDetails);
+        return $this->request('POST', $endpoint, $cancellationDetails, 'cancel_subscription');
     }
 
     /**
@@ -485,7 +621,7 @@ class Client
             'subscription_id' => $subscriptionId
         ]);
         
-        return $this->request('POST', $endpoint, $pauseData);
+        return $this->request('POST', $endpoint, $pauseData, 'pause_subscription');
     }
 
     /**
@@ -503,7 +639,7 @@ class Client
             'subscription_id' => $subscriptionId
         ]);
         
-        return $this->request('POST', $endpoint);
+        return $this->request('POST', $endpoint, null, 'resume_subscription');
     }
 
     /**
@@ -519,7 +655,7 @@ class Client
         $queryString = http_build_query(array_merge(['customer' => $customerId], $params));
         $endpoint = $this->getApiUrl() . '/subscriptions?' . $queryString;
         
-        return $this->request('GET', $endpoint);
+        return $this->request('GET', $endpoint, null, 'list_subscriptions');
     }
 
     /**
@@ -537,7 +673,7 @@ class Client
             'email' => $customerData['email'] ?? null
         ]);
         
-        return $this->request('POST', $endpoint, $customerData);
+        return $this->request('POST', $endpoint, $customerData, 'create_customer');
     }
 
     /**
@@ -551,7 +687,7 @@ class Client
     {
         $endpoint = $this->getApiUrl() . '/customers/' . $customerId;
         
-        return $this->request('GET', $endpoint);
+        return $this->request('GET', $endpoint, null, 'get_customer');
     }
 
     /**
@@ -594,7 +730,7 @@ class Client
             'checkout_id' => $checkoutId
         ]);
         
-        return $this->request('POST', $endpoint, $data);
+        return $this->request('POST', $endpoint, $data, 'create_payment_method');
     }
 }
 

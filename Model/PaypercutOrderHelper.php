@@ -7,6 +7,8 @@ use Magento\Sales\Api\Data\OrderInterface;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Vault\Api\PaymentTokenManagementInterface;
 use Paypercut\Payment\Model\Api\Client;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -36,21 +38,29 @@ class PaypercutOrderHelper
     private $logger;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param Client $apiClient
      * @param OrderRepositoryInterface $orderRepository
      * @param PaymentTokenManagementInterface $paymentTokenManagement
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         Client $apiClient,
         OrderRepositoryInterface $orderRepository,
         PaymentTokenManagementInterface $paymentTokenManagement,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->apiClient = $apiClient;
         $this->orderRepository = $orderRepository;
         $this->paymentTokenManagement = $paymentTokenManagement;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -110,6 +120,10 @@ class PaypercutOrderHelper
             $this->logger->info('Paypercut: Using saved payment method ID', [
                 'payment_method_id' => $paymentMethodId
             ]);
+            $this->recorder->record(
+                Event::of('payment_method.already_saved')
+                    ->about(['order_ref' => (string) $order->getIncrementId()])
+            );
             return $paymentMethodId;
         }
 
@@ -136,18 +150,43 @@ class PaypercutOrderHelper
                         'payment_method_id' => $paymentMethodId
                     ]);
 
+                    $this->recorder->record(
+                        Event::of('payment_method.added', ['source' => 'checkout_session'])
+                            ->about([
+                                'order_ref' => (string) $order->getIncrementId(),
+                                'payment_id' => (string) $checkoutId
+                            ])
+                    );
+
                     return $paymentMethodId;
                 }
 
                 $this->logger->warning('Paypercut: No payment method found in checkout response', [
                     'checkout_id' => $checkoutId
                 ]);
+
+                $this->recorder->record(
+                    Event::failure('payment_method.add_failed', 'token_not_saved', [
+                        'source' => 'checkout_session'
+                    ])->about(['order_ref' => (string) $order->getIncrementId()])
+                );
             } catch (\Exception $e) {
                 $this->logger->warning('Paypercut: Failed to retrieve checkout session', [
                     'checkout_id' => $checkoutId,
                     'error' => $e->getMessage()
                 ]);
+
+                $this->recorder->record(
+                    Event::failure('payment_method.add_failed', 'lookup_failed', [
+                        'source' => 'checkout_session'
+                    ], $e)->about(['order_ref' => (string) $order->getIncrementId()])
+                );
             }
+        } else {
+            $this->recorder->record(
+                Event::failure('payment_method.add_failed', 'no_session_id')
+                    ->about(['order_ref' => (string) $order->getIncrementId()])
+            );
         }
 
         // Check for vault token
@@ -169,6 +208,13 @@ class PaypercutOrderHelper
         $this->logger->warning('Paypercut: No payment method available', [
             'order_id' => $order->getIncrementId()
         ]);
+
+        $this->recorder->record(
+            Event::failure('payment_method.add_failed', 'no_payment_method', [
+                'source' => 'vault',
+                'has_customer_id' => (bool) $order->getCustomerId()
+            ])->about(['order_ref' => (string) $order->getIncrementId()])
+        );
 
         return null;
     }

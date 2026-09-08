@@ -1,0 +1,1249 @@
+<?php
+declare(strict_types=1);
+
+namespace Paypercut\Payment\Model\Telemetry;
+
+use Paypercut\Payment\Model\Api\PaypercutApiException;
+use Throwable;
+
+/**
+ * A single diagnostic event, and the allow-list that defines what may leave the store.
+ *
+ * There is deliberately no generic "record these fields" constructor. Every
+ * event is built by a named constructor with declared scalar parameters, so the
+ * set of things that can ever be transmitted is fixed at compile time rather
+ * than at each call site. `is_scalar()` is explicitly NOT the boundary — every
+ * secret this module holds (the card secret key, the BNPL secret key, the
+ * webhook secret) is a scalar string living beside the settings we do report.
+ */
+class Event
+{
+    /**
+     * Longest string any single field may carry, in bytes.
+     *
+     * Bytes rather than codepoints because the edge bounds the raw Go string:
+     * a 128-codepoint CJK theme name is 384 bytes and would be dropped whole.
+     */
+    const MAX_TEXT_BYTES = 256;
+
+    /**
+     * The edge keeps the first attributes in sorted key order and drops the
+     * rest, so a single over-wide event would silently lose its version fields.
+     */
+    const MAX_ATTRS = 16;
+
+    /**
+     * Enough frames to see where a failure came from, never a full dump.
+     */
+    const MAX_STACK_FRAMES = 8;
+
+    /**
+     * Shortest run of a credential that still identifies it, for the run
+     * comparison below. Long enough that ordinary prose cannot collide with it.
+     */
+    const MIN_SECRET_RUN_BYTES = 12;
+
+    /**
+     * How far past MAX_TEXT_BYTES the screen looks before a value is clamped.
+     *
+     * Clamping runs before the assertion does, so a PAN or a credential that
+     * straddles the byte bound would otherwise reach the wire with its tail
+     * cut off — and 15 of 16 PAN digits is not redaction, it is a Luhn puzzle
+     * with one solution. Wide enough to hold the longest poison whole.
+     */
+    const SCREEN_OVERLAP_BYTES = 64;
+
+    /**
+     * The card-number length range the PAN screen recognises.
+     */
+    const MIN_PAN_DIGITS = 13;
+
+    const MAX_PAN_DIGITS = 19;
+
+    /**
+     * The separators a card number is grouped with when it is written out.
+     *
+     * Wider than space and hyphen: a value pasted from a spreadsheet or a log
+     * arrives dot-, comma-, slash- or underscore-separated, and each of those
+     * hid a whole PAN from the scan.
+     */
+    const PAN_RUN_PATTERN = '/\d(?:[ \t._\/,-]?\d){12,}/';
+
+
+    /**
+     * Multi-byte characters that group a card number, folded to a plain space.
+     *
+     * The scan reads bytes, so a separator wider than one byte ends the digit run
+     * and each group is screened alone: an en dash between the groups of a real
+     * PAN was enough to ship it verbatim. Word processors, spreadsheets and
+     * chat clients all substitute these for the ASCII forms on their own.
+     */
+    const PAN_UNICODE_SEPARATORS = [
+        "\xc2\xa0" => ' ', // U+00A0 no-break space
+        "\xc2\xad" => ' ', // U+00AD soft hyphen
+        "\xe2\x80\x87" => ' ', // U+2007 figure space
+        "\xe2\x80\x88" => ' ', // U+2008 punctuation space
+        "\xe2\x80\x89" => ' ', // U+2009 thin space
+        "\xe2\x80\x8b" => ' ', // U+200B zero-width space
+        "\xe2\x80\x90" => ' ', // U+2010 hyphen
+        "\xe2\x80\x91" => ' ', // U+2011 non-breaking hyphen
+        "\xe2\x80\x92" => ' ', // U+2012 figure dash
+        "\xe2\x80\x93" => ' ', // U+2013 en dash
+        "\xe2\x80\x94" => ' ', // U+2014 em dash
+        "\xe2\x80\x95" => ' ', // U+2015 horizontal bar
+        "\xe2\x80\xaf" => ' ', // U+202F narrow no-break space
+        "\xe2\x81\xa0" => ' ', // U+2060 word joiner
+        "\xe2\x88\x92" => ' ', // U+2212 minus sign
+        "\xe3\x80\x80" => ' ', // U+3000 ideographic space
+        "\xef\xbb\xbf" => ' ', // U+FEFF zero-width no-break space
+        "\xef\xbc\x8d" => ' ', // U+FF0D fullwidth hyphen-minus
+    ];
+
+    /**
+     * Card-network prefixes, and the PAN lengths each network actually issues.
+     *
+     * The scan slides across a digit run, so accepting ANY Luhn-valid 13-19
+     * digit window denies most long numeric order references: a 16-digit run
+     * holds ten candidate windows, each ~10% likely to pass Luhn by chance.
+     * Requiring an assigned issuer prefix at a length that issuer really uses
+     * keeps every real PAN and drops that rate by an order of magnitude.
+     *
+     * @var array<string, int[]>
+     */
+    const CARD_NETWORKS = [
+        '/\A4/' => [13, 16, 19],
+        '/\A(?:5[1-5]|2(?:2[2-9]|[3-6]\d|7[01]|720))/' => [16],
+        '/\A3[47]/' => [15],
+        '/\A(?:6011|64[4-9]|65)/' => [16, 19],
+        '/\A(?:30[0-5]|3[689])/' => [14, 16, 19],
+        '/\A35/' => [16, 19],
+        '/\A62/' => [16, 17, 18, 19],
+        // Maestro is issued across this estate and its BINs fall outside every
+        // range above; the prefixes are specific enough to cost no false denials.
+        '/\A(?:5018|5020|5038|5893|6304|6759|676[123])/' => [13, 14, 15, 16, 17, 18, 19],
+    ];
+
+    /**
+     * How deep the deny assertion will walk an envelope before refusing it.
+     *
+     * The wire shape nests two levels (`error.stack`); the bound only stops a
+     * malformed event from recursing without end, and exceeding it is a denial,
+     * never a pass.
+     */
+    const MAX_SCREEN_DEPTH = 6;
+
+    /**
+     * Field names that must never appear in an event, whatever their value.
+     *
+     * `auth`, `authorization` and `nonce` match as whole words only. As bare
+     * substrings they dropped real inventory keys — `payment.authorizenet_aim`,
+     * `ParadoxLabs_Authnetcim` — and a denied key bins the whole event.
+     */
+    const DENIED_KEY_PATTERN =
+        '/secret|token|password|credential|(?<![A-Za-z0-9])(?:auth|authori[sz]ation|nonce)(?![A-Za-z0-9])|_key$/i';
+
+    /**
+     * Value shapes that must never appear in an event, whatever their field name.
+     *
+     * Matched against the credentials this module actually holds — a Paypercut
+     * key or an Ory-issued JWT. Not anchored to the start of the string,
+     * because a stack frame or an HTTP error carries the credential mid-string
+     * every time; not left unanchored either, because bare `sk_`/`pk_` matches
+     * `disk_usage` and `risk_free` and a tripped assertion bins the whole event.
+     */
+    const DENIED_VALUE_PATTERN = '/(?:^|[^A-Za-z0-9_])(ppc_|sk_|pk_|whsec_|eyJ[A-Za-z0-9_-]+\.)/i';
+
+    /**
+     * Host and platform versions. Read by environmentSnapshot().
+     *
+     * Both snapshot lists are iterated INSTEAD of the caller's array: pulling
+     * keys from a settings array is how a credential ends up on the wire.
+     *
+     * @var array<string, string>
+     */
+    const SNAPSHOT_FIELDS = [
+        'plugin_version' => 'text',
+        'magento_version' => 'text',
+        'magento_edition' => 'text',
+        'php_version' => 'text',
+        'theme_name' => 'text',
+        'theme_version' => 'text',
+        'is_multistore' => 'bool',
+        'is_ssl' => 'bool',
+    ];
+
+    /**
+     * Module settings. Read by environmentConfiguration().
+     *
+     * @var array<string, string>
+     */
+    const CONFIGURATION_FIELDS = [
+        'checkout_mode' => 'identifier',
+        'payment_action' => 'identifier',
+        'order_status' => 'identifier',
+        'refund_action' => 'identifier',
+        'saved_payment_methods' => 'bool',
+        'card_enabled' => 'bool',
+        'bnpl_enabled' => 'bool',
+        'subscriptions_enabled' => 'bool',
+        'logging_enabled' => 'bool',
+        'connection_environment' => 'identifier',
+        'api_key_configured' => 'bool',
+        'webhook_configured' => 'bool',
+        'bnpl_key_configured' => 'bool',
+        'bnpl_installments' => 'text',
+        'bnpl_show_installment_preview' => 'bool',
+        'subscription_collection_method' => 'identifier',
+    ];
+
+    /**
+     * @var string
+     */
+    private $name;
+
+    /**
+     * @var array<string, bool|float|int|string>
+     */
+    private $fields;
+
+    /**
+     * Contract-level correlation fields, sent outside `attrs`.
+     *
+     * @var array<string, string>
+     */
+    private $correlation = [];
+
+    /**
+     * @var array<string, mixed>
+     */
+    private $error = [];
+
+    /**
+     * @param string $name
+     * @param array<string, bool|float|int|string> $fields
+     */
+    private function __construct(string $name, array $fields)
+    {
+        $this->name = $name;
+        $this->fields = $fields;
+    }
+
+    /**
+     * Report something that happened and did not fail.
+     *
+     * Failures alone cannot answer the commonest support question, which is
+     * whether the shopper ever reached us: a session with no `checkout.*`
+     * events at all and one with a silent early return look identical.
+     *
+     * @param string $name
+     * @param array<string, mixed> $attrs
+     * @return self
+     */
+    public static function of(string $name, array $attrs = []): self
+    {
+        return new self($name, self::cleanAttrs($attrs));
+    }
+
+    /**
+     * Report a failure, under whichever event name describes where it happened.
+     *
+     * @param string $name
+     * @param string $code
+     * @param array<string, mixed> $attrs
+     * @param Throwable|null $exception
+     * @return self
+     */
+    public static function failure(string $name, string $code, array $attrs = [], ?Throwable $exception = null): self
+    {
+        $event = new self($name, self::cleanAttrs($attrs));
+
+        $event->error = ['code' => self::text($code) ?: 'unknown'];
+
+        if ($exception !== null) {
+            // An exception message is upstream text: Magento's DB layer quotes
+            // the full SQL and `user@host` back, and its LocalizedExceptions
+            // carry order totals the disclosure promises are not shared. The
+            // type, the scrubbed stack and `origin` carry the diagnosis; a
+            // message this module authored is set with because().
+            $event->error['type'] = self::shortClassName($exception);
+            $event->error['stack'] = self::stack($exception);
+
+            $event->addFields(self::origin(self::frameFiles($exception)));
+        }
+
+        return $event;
+    }
+
+    /**
+     * Report a Paypercut API failure with the fields the platform returned.
+     *
+     * @param string $name
+     * @param PaypercutApiException $exception
+     * @param array<string, mixed> $attrs
+     * @return self
+     */
+    public static function apiFailure(string $name, PaypercutApiException $exception, array $attrs = []): self
+    {
+        $event = self::failure($name, 'http_' . $exception->getStatusCode(), $attrs, $exception);
+
+        // The platform quotes its input back — a rejected key arrives inside
+        // the message — so no API prose travels. `api_code` and `trace_id`
+        // carry the diagnosis instead.
+        unset($event->error['message']);
+
+        $event->error['type'] = self::text($exception->getErrorType()) ?: ($event->error['type'] ?? 'ApiError');
+
+        $api = [];
+
+        foreach ([
+            'api_code' => $exception->getErrorCode(),
+            'api_param' => $exception->getParam(),
+            'trace_id' => $exception->getTraceId(),
+        ] as $key => $value) {
+            $clean = self::text((string) $value);
+
+            if ($clean !== '') {
+                $api[$key] = $clean;
+            }
+        }
+
+        $api['http_status'] = $exception->getStatusCode();
+
+        $event->addFields($api);
+
+        return $event;
+    }
+
+    /**
+     * Report the fatal that ended a request.
+     *
+     * Built from error_get_last(), which carries no exception and no trace —
+     * the file that died is the only attribution available.
+     *
+     * @param string $message
+     * @param string $file
+     * @param int $line
+     * @param int $level
+     * @return self
+     */
+    public static function fatal(string $message, string $file, int $line, int $level): self
+    {
+        $event = new self('php.fatal', ['level' => $level]);
+
+        $event->addFields(self::origin([$file]));
+
+        $fatal = self::fatalError($message);
+
+        $event->error = [
+            'code' => 'php_fatal',
+            'type' => $fatal['type'],
+            'stack' => [self::relativePath($file) . ':' . $line],
+        ];
+
+        if ($fatal['message'] !== '') {
+            $event->error['message'] = $fatal['message'];
+        }
+
+        return $event;
+    }
+
+    /**
+     * Note what is absent: the admin user who started the session. The durable
+     * record keeps it for the admin notice, but it is a store-user identifier
+     * that the merchant-facing disclosure does not cover, so it stays local.
+     *
+     * @param string $sessionId
+     * @param string $environment
+     * @param int $expiresAt
+     * @return self
+     */
+    public static function sessionStarted(string $sessionId, string $environment, int $expiresAt): self
+    {
+        return new self('session.started', [
+            'session_id' => self::identifier($sessionId),
+            'environment' => self::identifier($environment),
+            'expires_at' => $expiresAt,
+        ]);
+    }
+
+    /**
+     * @param string $sessionId
+     * @param string $reason
+     * @param int $eventsSent
+     * @param int $eventsDropped
+     * @return self
+     */
+    public static function sessionStopped(string $sessionId, string $reason, int $eventsSent, int $eventsDropped): self
+    {
+        return new self('session.stopped', [
+            'session_id' => self::identifier($sessionId),
+            'reason' => self::identifier($reason),
+            'events_sent' => $eventsSent,
+            'events_dropped' => $eventsDropped,
+        ]);
+    }
+
+    /**
+     * Build the one-off environment snapshot.
+     *
+     * @param array<string, mixed> $values Candidate values; only SNAPSHOT_FIELDS keys are read.
+     * @return self
+     */
+    public static function environmentSnapshot(array $values): self
+    {
+        return new self('environment.snapshot', self::castFields(self::SNAPSHOT_FIELDS, $values));
+    }
+
+    /**
+     * Build the one-off module-configuration snapshot.
+     *
+     * Separate from the environment snapshot only because the two together
+     * exceed MAX_ATTRS; nothing else distinguishes them.
+     *
+     * @param array<string, mixed> $values Candidate values; only CONFIGURATION_FIELDS keys are read.
+     * @return self
+     */
+    public static function environmentConfiguration(array $values): self
+    {
+        return new self('environment.configuration', self::castFields(self::CONFIGURATION_FIELDS, $values));
+    }
+
+    /**
+     * Build the installed-module inventory, chunked to fit the attribute cap.
+     *
+     * A conflict is usually named here: this is the list support compares
+     * against a working store. Versions only — no author, no path.
+     *
+     * @param array<string, string> $plugins name => version, sorted by the caller.
+     * @return self[]
+     */
+    public static function environmentPlugins(array $plugins): array
+    {
+        $total = count($plugins);
+        $named = [];
+        $quoted = [];
+
+        foreach ($plugins as $slug => $version) {
+            $key = self::text((string) $slug);
+
+            if ($key === '' || self::shapeDenied($key)) {
+                continue;
+            }
+
+            // A module NAME can trip the denied-key screen all by itself —
+            // `ParadoxLabs_Authnetcim`, `MSP_TwoFactorAuth` — and the assertion
+            // drops the whole event, taking its 13 innocent chunk-mates with
+            // it. Those names travel as values instead, where only the value
+            // screens apply and the inventory survives intact.
+            if (preg_match(self::DENIED_KEY_PATTERN, $key)) {
+                $quoted[] = $key . ' ' . self::text((string) $version);
+                continue;
+            }
+
+            $named[$key] = self::text((string) $version);
+        }
+
+        $events = [];
+        $chunk = 0;
+
+        foreach (array_chunk($named, self::MAX_ATTRS - 2, true) as $slice) {
+            $chunk++;
+            $events[] = new self('environment.plugins', [
+                'plugin_count' => $total,
+                'chunk' => $chunk,
+            ] + $slice);
+        }
+
+        foreach (array_chunk($quoted, self::MAX_ATTRS - 2) as $slice) {
+            $chunk++;
+            $fields = [
+                'plugin_count' => $total,
+                'chunk' => $chunk,
+            ];
+
+            foreach ($slice as $index => $entry) {
+                $fields['module_' . ($index + 1)] = $entry;
+            }
+
+            $events[] = new self('environment.plugins', $fields);
+        }
+
+        return $events;
+    }
+
+    /**
+     * Attach the ids that join this event to a payment.
+     *
+     * Bound as ids, not as free text: on the webhook paths these arrive in an
+     * unauthenticated request body, and only an id belongs in an id field.
+     *
+     * @param array<string, mixed> $correlation
+     * @return $this
+     */
+    public function about(array $correlation): self
+    {
+        foreach (['payment_intent_id', 'payment_id', 'order_ref'] as $field) {
+            $value = self::correlationId(trim((string) ($correlation[$field] ?? '')));
+
+            if ($value !== '') {
+                $this->correlation[$field] = $value;
+            }
+        }
+
+        return $this;
+    }
+
+    /**
+     * A message this module authored itself, for a failure with no exception
+     * worth quoting.
+     *
+     * @param string $message
+     * @return $this
+     */
+    public function because(string $message): self
+    {
+        $clean = self::text($message);
+
+        if ($clean !== '') {
+            $this->error['message'] = $clean;
+        }
+
+        return $this;
+    }
+
+    /**
+     * @return string
+     */
+    public function name(): string
+    {
+        return $this->name;
+    }
+
+    /**
+     * @return array<string, bool|float|int|string>
+     */
+    public function fields(): array
+    {
+        return $this->fields;
+    }
+
+    /**
+     * The wire shape of a single event inside a batch.
+     *
+     * The contract's field is `occurred_at`, an RFC3339 STRING. Sending a unix
+     * int under that name fails the whole event, so name and type move together.
+     *
+     * @param int|null $now Injected clock, so the suite can pin timestamps.
+     * @return array<string, mixed>
+     */
+    public function envelope(?int $now = null): array
+    {
+        $envelope = [
+            'event' => $this->name,
+            'occurred_at' => gmdate('Y-m-d\TH:i:s\Z', $now ?? time()),
+        ];
+
+        foreach ($this->correlation as $field => $value) {
+            $envelope[$field] = $value;
+        }
+
+        if (!empty($this->error)) {
+            $envelope['error'] = $this->error;
+        }
+
+        // PHP renders an empty array as [], which the edge reads as "not an
+        // object" and records as a drop against an otherwise clean event.
+        if (!empty($this->fields)) {
+            $envelope['attrs'] = self::capFields($this->fields);
+        }
+
+        return $envelope;
+    }
+
+    /**
+     * The screen applied to an envelope on its way to the queue.
+     *
+     * The WHOLE envelope, not a hand-picked subset: the correlation fields
+     * written by about() are as much on the wire as `attrs`, and on the webhook
+     * paths their value came from an unauthenticated request body. A field
+     * added to envelope() tomorrow is screened by construction, because nothing
+     * here enumerates field names.
+     *
+     * @param array<string, mixed> $envelope
+     * @param array<int, mixed> $secrets
+     * @return bool
+     */
+    public static function envelopeDenied(array $envelope, array $secrets = []): bool
+    {
+        return self::isDenied($envelope, $secrets);
+    }
+
+    /**
+     * Hard deny assertion: true when this event must be dropped entirely.
+     *
+     * A safety net behind the named constructors, not the primary control. It
+     * drops the whole event rather than the offending field, because a field
+     * that trips it means the event was assembled wrongly and the rest of it
+     * cannot be trusted either.
+     *
+     * @param array<string, mixed> $fields
+     * @param array<int, mixed> $secrets
+     * @param int $depth
+     * @return bool
+     */
+    public static function isDenied(array $fields, array $secrets = [], int $depth = 0): bool
+    {
+        foreach ($fields as $key => $value) {
+            $name = (string) $key;
+
+            // A key is on the wire exactly like a value, so it faces the value
+            // screens as well: a PAN or a credential is no safer as a field
+            // name than as a field.
+            if (preg_match(self::DENIED_KEY_PATTERN, $name) || self::valueDenied($name, $secrets)) {
+                return true;
+            }
+
+            // The contract nests one level — `error`, and `error.stack` inside
+            // it. Without recursion the assertion sees a non-string and gives
+            // up, which is exactly where free text now lives.
+            if (is_array($value)) {
+                // Deny rather than skip past the bound: a structure the screen
+                // cannot finish walking is one it cannot vouch for.
+                if ($depth >= self::MAX_SCREEN_DEPTH) {
+                    return true;
+                }
+
+                if (self::isDenied($value, $secrets, $depth + 1)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if ($value === null) {
+                continue;
+            }
+
+            // Anything that is not a scalar cannot be rendered for comparison,
+            // so it is denied rather than waved through unread.
+            if (!is_scalar($value)) {
+                return true;
+            }
+
+            // Screen the wire form, not the PHP value: json_encode renders an
+            // int or float verbatim, so `4111111111111111` is a PAN on the wire
+            // whether or not it was ever a string — and a plain (string) cast
+            // would hide the float one behind exponent notation.
+            if (!is_string($value)) {
+                $encoded = json_encode($value);
+                $value = is_string($encoded) ? $encoded : '';
+            }
+
+            if ($value === '') {
+                continue;
+            }
+
+            if (self::valueDenied($value, $secrets)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Everything that disqualifies a single rendered string, key or value.
+     *
+     * @param string $value
+     * @param array<int, mixed> $secrets
+     * @return bool
+     */
+    private static function valueDenied(string $value, array $secrets): bool
+    {
+        if ($value === '') {
+            return false;
+        }
+
+        if (self::shapeDenied($value)) {
+            return true;
+        }
+
+        // Shape matching is a guess; comparing against the store's actual
+        // credentials is not. This catches a secret whose format we never
+        // anticipated, including one a future Paypercut release introduces.
+        foreach ($secrets as $secret) {
+            if (!is_string($secret) || $secret === '') {
+                continue;
+            }
+
+            if (self::carriesSecret($value, $secret)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The screens that need no knowledge of this store: credential shapes and
+     * card numbers. Applied before the byte clamp as well as after it.
+     *
+     * @param string $value
+     * @return bool
+     */
+    private static function shapeDenied(string $value): bool
+    {
+        return preg_match(self::DENIED_VALUE_PATTERN, $value) === 1 || self::containsCardNumber($value);
+    }
+
+    /**
+     * Does the value carry a recognisable run of this secret, anywhere?
+     *
+     * Neither end of either string can be assumed: text() clamps at
+     * MAX_TEXT_BYTES so a credential reaches here with its tail cut off, and an
+     * upstream error quotes a credential mid-string, which leaves only a middle
+     * slice. Any run of MIN_SECRET_RUN_BYTES they share is a leak, wherever it
+     * sits in either one.
+     *
+     * @param string $value
+     * @param string $secret
+     * @return bool
+     */
+    private static function carriesSecret(string $value, string $secret): bool
+    {
+        $length = strlen($secret);
+
+        if ($length <= self::MIN_SECRET_RUN_BYTES) {
+            return strpos($value, $secret) !== false;
+        }
+
+        for ($offset = 0; $offset + self::MIN_SECRET_RUN_BYTES <= $length; $offset++) {
+            if (strpos($value, substr($secret, $offset, self::MIN_SECRET_RUN_BYTES)) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * A Luhn-valid 13-19 digit card number anywhere in the value.
+     *
+     * The edge screens for a PAN too, but only when the whole value is one:
+     * `Card 4111111111111111 was declined` passes it. Card data must never
+     * leave a merchant estate, so the client is the right place to enforce it.
+     *
+     * Every offset in the digit run is tested, not the run as a whole: a PAN
+     * with one digit stuck to it is still a PAN, and testing only the maximal
+     * run means a single adjacent digit defeats the screen.
+     *
+     * @param string $value
+     * @return bool
+     */
+    public static function containsCardNumber(string $value): bool
+    {
+        $value = strtr($value, self::PAN_UNICODE_SEPARATORS);
+
+        if (!preg_match_all(self::PAN_RUN_PATTERN, $value, $matches)) {
+            return false;
+        }
+
+        foreach ($matches[0] as $run) {
+            if (self::runCarriesCardNumber((string) preg_replace('/\D/', '', $run))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Slide every issuer prefix across one run of digits.
+     *
+     * @param string $digits
+     * @return bool
+     */
+    private static function runCarriesCardNumber(string $digits): bool
+    {
+        $length = strlen($digits);
+
+        for ($offset = 0; $offset + self::MIN_PAN_DIGITS <= $length; $offset++) {
+            $head = substr($digits, $offset, 4);
+
+            foreach (self::CARD_NETWORKS as $prefix => $sizes) {
+                if (!preg_match($prefix, $head)) {
+                    continue;
+                }
+
+                foreach ($sizes as $size) {
+                    if ($offset + $size <= $length && self::luhnValid(substr($digits, $offset, $size))) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Free-ish text: printable characters only, hard byte cap.
+     *
+     * UTF-8 is preserved rather than stripped — a Greek or Japanese theme name
+     * is one of the more useful diagnostics there is, and reducing it to an
+     * empty string would silently lose it. Only control characters go.
+     *
+     * @param string $value
+     * @return string
+     */
+    public static function text(string $value): string
+    {
+        $clean = (string) preg_replace('/[\x00-\x1F\x7F]/u', '', $value);
+
+        if ($clean === '' && $value !== '') {
+            // Invalid UTF-8 made the unicode-mode replace fail; fall back to ASCII.
+            $clean = (string) preg_replace('/[^\x20-\x7E]/', '', $value);
+        }
+
+        $clamped = self::clamp($clean, self::MAX_TEXT_BYTES);
+
+        if ($clamped === $clean) {
+            return $clamped;
+        }
+
+        // The clamp runs before the deny assertion, so it must never turn a
+        // value the assertion would deny into one it would not. When it would,
+        // the pre-clamp window travels instead and the whole event is dropped.
+        $window = self::clamp($clean, self::MAX_TEXT_BYTES + self::SCREEN_OVERLAP_BYTES);
+
+        return self::shapeDenied($window) ? $window : $clamped;
+    }
+
+    /**
+     * Cut to a byte budget on a codepoint boundary.
+     *
+     * mb_substr counts codepoints and would overshoot the edge's byte bound.
+     *
+     * @param string $value
+     * @param int $bytes
+     * @return string
+     */
+    private static function clamp(string $value, int $bytes): string
+    {
+        return function_exists('mb_strcut')
+            ? mb_strcut($value, 0, $bytes)
+            : substr($value, 0, $bytes);
+    }
+
+    /**
+     * Identifier-shaped values only; anything else is dropped rather than mangled.
+     *
+     * @param string $value
+     * @return string
+     */
+    public static function identifier(string $value): string
+    {
+        // \A/\z rather than ^/$: PCRE's `$` accepts a trailing newline, which
+        // would let "pi_1\n" through as identifier-shaped. A separator is only
+        // ever between two alphanumerics, so `..` and `../x` are not ids.
+        return preg_match('/\A[A-Za-z0-9](?:[A-Za-z0-9]|[_.:-](?=[A-Za-z0-9])){0,63}\z/D', $value)
+            ? $value
+            : '';
+    }
+
+    /**
+     * A correlation id: an identifier, plus the separators a merchant-facing
+     * order reference really uses.
+     *
+     * Deliberately wider than identifier() and no wider: a Magento increment
+     * id carries a store prefix and a merchant may shape it `MAG-2026/8891`,
+     * which must survive intact, while markup, a URL, a bidi override and SQL
+     * are not ids and are dropped rather than clamped into the field.
+     *
+     * Every separator must sit between two alphanumerics, which keeps real
+     * references lossless while `../../etc/passwd` and `//host/path` are not
+     * ids at all.
+     *
+     * @param string $value
+     * @return string
+     */
+    public static function correlationId(string $value): string
+    {
+        return preg_match('/\A[A-Za-z0-9](?:[A-Za-z0-9]|[_.:\/#-](?=[A-Za-z0-9])){0,63}\z/D', $value)
+            ? $value
+            : '';
+    }
+
+    /**
+     * The class name without its namespace.
+     *
+     * Public because a call site that must not send an exception's message
+     * still wants to name its type — a rejected credential is quoted back in
+     * the message but never in the class.
+     *
+     * @param Throwable $exception
+     * @return string
+     */
+    public static function shortClassName(Throwable $exception): string
+    {
+        $parts = explode('\\', get_class($exception));
+
+        return self::text((string) end($parts)) ?: 'Throwable';
+    }
+
+    /**
+     * Attribute a failure to the code that raised it.
+     *
+     * The commonest support case is another module breaking ours, and the
+     * answer is in the stack: the first frame outside our own directory names
+     * it. The wire values stay `plugin`/`theme`/`core`/`paypercut` across every
+     * platform so support can compare stores; only merchant-facing copy says
+     * "module".
+     *
+     * @param string[] $files Absolute paths, innermost first.
+     * @return array<string, string>
+     */
+    public static function origin(array $files): array
+    {
+        $ours = self::moduleRoot();
+        $base = self::basePath();
+
+        foreach ($files as $file) {
+            $file = (string) $file;
+
+            if ($ours !== '' && strpos($file, $ours) === 0) {
+                continue;
+            }
+
+            if ($base === '') {
+                return ['origin' => 'core'];
+            }
+
+            if (strpos($file, $base . '/app/design/') === 0) {
+                return ['origin' => 'theme'];
+            }
+
+            if (strpos($file, $base . '/app/code/') === 0) {
+                $relative = substr($file, strlen($base . '/app/code/'));
+                $parts = explode('/', $relative);
+
+                return [
+                    'origin' => 'plugin',
+                    'origin_plugin' => self::text(implode('_', array_slice($parts, 0, 2))),
+                ];
+            }
+
+            if (strpos($file, $base . '/vendor/') === 0) {
+                $relative = substr($file, strlen($base . '/vendor/'));
+                $parts = explode('/', $relative);
+                $package = implode('/', array_slice($parts, 0, 2));
+
+                if (($parts[0] ?? '') === 'magento') {
+                    return ['origin' => 'core'];
+                }
+
+                return [
+                    'origin' => 'plugin',
+                    'origin_plugin' => self::text($package),
+                ];
+            }
+
+            return ['origin' => 'core'];
+        }
+
+        return ['origin' => 'paypercut'];
+    }
+
+    /**
+     * @param array<string, string> $schema
+     * @param array<string, mixed> $values
+     * @return array<string, bool|float|int|string>
+     */
+    private static function castFields(array $schema, array $values): array
+    {
+        $fields = [];
+
+        foreach ($schema as $key => $cast) {
+            if (!array_key_exists($key, $values)) {
+                continue;
+            }
+
+            $value = $values[$key];
+
+            if ($cast === 'bool') {
+                $fields[$key] = (bool) $value;
+                continue;
+            }
+
+            if (!is_scalar($value)) {
+                continue;
+            }
+
+            $clean = $cast === 'identifier'
+                ? self::identifier((string) $value)
+                : self::text((string) $value);
+
+            if ($clean !== '') {
+                $fields[$key] = $clean;
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Bound attributes a call site passed in, rather than trusting them.
+     *
+     * Booleans and ints are already bounded and pass through intact; strings
+     * are clamped and control-stripped; anything else is not a scalar
+     * diagnostic and is dropped.
+     *
+     * @param array<string, mixed> $attrs
+     * @return array<string, bool|float|int|string>
+     */
+    private static function cleanAttrs(array $attrs): array
+    {
+        $fields = [];
+
+        foreach ($attrs as $key => $value) {
+            if (count($fields) >= self::MAX_ATTRS) {
+                break;
+            }
+
+            $name = self::text((string) $key);
+
+            if ($name === '' || !is_scalar($value)) {
+                continue;
+            }
+
+            $fields[$name] = is_string($value) ? self::text($value) : $value;
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Merge module-authored diagnostic fields in, under the attribute cap.
+     *
+     * @param array<string, bool|float|int|string> $extra
+     * @return void
+     */
+    private function addFields(array $extra): void
+    {
+        $this->fields = self::capFields(array_merge($this->fields, $extra), $extra);
+    }
+
+    /**
+     * Hold a field set to MAX_ATTRS, keeping the fields this module added.
+     *
+     * The edge keeps attributes in sorted key order and drops the overflow, so
+     * an over-wide event loses whichever keys sort last — `origin`, `trace_id`
+     * and the version fields among them. Caller-supplied attrs give way first.
+     *
+     * @param array<string, bool|float|int|string> $fields
+     * @param array<string, bool|float|int|string> $keep
+     * @return array<string, bool|float|int|string>
+     */
+    private static function capFields(array $fields, array $keep = []): array
+    {
+        if (count($fields) <= self::MAX_ATTRS) {
+            return $fields;
+        }
+
+        $capped = [];
+
+        foreach ($fields as $key => $value) {
+            if (count($capped) < self::MAX_ATTRS && array_key_exists($key, $keep)) {
+                $capped[$key] = $value;
+            }
+        }
+
+        foreach ($fields as $key => $value) {
+            if (count($capped) >= self::MAX_ATTRS) {
+                break;
+            }
+
+            if (!array_key_exists($key, $capped)) {
+                $capped[$key] = $value;
+            }
+        }
+
+        return $capped;
+    }
+
+    /**
+     * File and line only, at most MAX_STACK_FRAMES of them.
+     *
+     * Never getTraceAsString(): that renders call arguments, which here are
+     * checkout payloads and credentials.
+     *
+     * @param Throwable $exception
+     * @return string[]
+     */
+    private static function stack(Throwable $exception): array
+    {
+        $frames = [];
+
+        foreach ($exception->getTrace() as $frame) {
+            if (count($frames) >= self::MAX_STACK_FRAMES) {
+                break;
+            }
+
+            if (!isset($frame['file'], $frame['line'])) {
+                continue;
+            }
+
+            $frames[] = self::relativePath((string) $frame['file']) . ':' . (int) $frame['line'];
+        }
+
+        return $frames;
+    }
+
+    /**
+     * Absolute file paths from a throwable, its own location first.
+     *
+     * @param Throwable $exception
+     * @return string[]
+     */
+    private static function frameFiles(Throwable $exception): array
+    {
+        $files = [$exception->getFile()];
+
+        foreach ($exception->getTrace() as $frame) {
+            if (isset($frame['file'])) {
+                $files[] = (string) $frame['file'];
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Paths relative to the module or the Magento root: an absolute path on
+     * shared hosting names the merchant's account or domain.
+     *
+     * @param string $file
+     * @return string
+     */
+    private static function relativePath(string $file): string
+    {
+        $base = self::basePath();
+        $roots = [self::moduleRoot()];
+
+        if ($base !== '') {
+            $roots[] = $base . '/app/code';
+            $roots[] = $base . '/app/design';
+            $roots[] = $base . '/vendor';
+            $roots[] = $base;
+        }
+
+        foreach ($roots as $root) {
+            if ($root !== '' && strpos($file, $root) === 0) {
+                return ltrim(substr($file, strlen($root)), '/');
+            }
+        }
+
+        return '[external]';
+    }
+
+    /**
+     * Split PHP's fatal message into a type and the part that may be reported.
+     *
+     * An uncaught throwable puts ITS OWN message here, which is upstream text
+     * under another name — the same prose failure() refuses to send, plus a
+     * ValueError's quoted argument values. Only the class survives. An engine
+     * fatal (memory exhausted, undefined function) is PHP's own wording and is
+     * kept, scrubbed of the inlined trace and of absolute paths.
+     *
+     * @param string $message
+     * @return array{type: string, message: string}
+     */
+    private static function fatalError(string $message): array
+    {
+        $message = self::fatalMessage($message);
+
+        if (preg_match('/\AUncaught\s+([A-Za-z0-9_\\\\]+)\s*:/', $message, $matches)) {
+            $parts = explode('\\', $matches[1]);
+
+            return ['type' => self::text((string) end($parts)) ?: 'FatalError', 'message' => ''];
+        }
+
+        return ['type' => 'FatalError', 'message' => self::text($message)];
+    }
+
+    /**
+     * Reduce PHP's fatal message to the part that is not already reported.
+     *
+     * An uncaught Error arrives with its whole stack trace inlined and every
+     * path absolute. Left alone it spends the byte clamp on frames the `stack`
+     * field already carries, and puts the server's filesystem layout on the wire.
+     *
+     * @param string $message
+     * @return string
+     */
+    private static function fatalMessage(string $message): string
+    {
+        $trace = strpos($message, 'Stack trace:');
+
+        if ($trace !== false) {
+            $message = rtrim(substr($message, 0, $trace));
+        }
+
+        foreach ([self::moduleRoot(), self::basePath()] as $root) {
+            if ($root !== '') {
+                $message = str_replace(rtrim($root, '/') . '/', '', $message);
+            }
+        }
+
+        return $message;
+    }
+
+    /**
+     * @return string
+     */
+    private static function moduleRoot(): string
+    {
+        return dirname(__DIR__, 2);
+    }
+
+    /**
+     * @return string
+     */
+    private static function basePath(): string
+    {
+        return defined('BP') ? rtrim((string) constant('BP'), '/') : '';
+    }
+
+    /**
+     * @param string $digits
+     * @return bool
+     */
+    private static function luhnValid(string $digits): bool
+    {
+        $length = strlen($digits);
+
+        if ($length < self::MIN_PAN_DIGITS || $length > self::MAX_PAN_DIGITS) {
+            return false;
+        }
+
+        $sum = 0;
+        $double = false;
+
+        for ($i = $length - 1; $i >= 0; $i--) {
+            $digit = (int) $digits[$i];
+
+            if ($double) {
+                $digit *= 2;
+
+                if ($digit > 9) {
+                    $digit -= 9;
+                }
+            }
+
+            $sum += $digit;
+            $double = !$double;
+        }
+
+        return $sum % 10 === 0;
+    }
+}

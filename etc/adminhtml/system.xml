@@ -86,6 +86,14 @@
                     </field>
                 </group>
 
+                <group id="debug_session" type="text" sortOrder="38" showInDefault="1" showInWebsite="0" showInStore="0" translate="label">
+                    <label>Debug Session</label>
+                    <field id="panel" translate="label" sortOrder="10" showInDefault="1" showInWebsite="0" showInStore="0">
+                        <label>Debug Session</label>
+                        <frontend_model>Paypercut\Payment\Block\Adminhtml\System\Config\DebugSession</frontend_model>
+                    </field>
+                </group>
+
                 <group id="country" translate="label" type="text" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Country Settings</label>
                     <field id="allowspecific" translate="label" type="allowspecific" sortOrder="10" showInDefault="1" showInWebsite="1" showInStore="0">

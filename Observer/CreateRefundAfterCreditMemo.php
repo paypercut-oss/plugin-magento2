@@ -10,6 +10,9 @@ use Magento\Sales\Api\Data\CreditmemoInterface;
 use Magento\Store\Model\ScopeInterface;
 use Paypercut\Payment\Model\Adminhtml\Source\RefundAction;
 use Paypercut\Payment\Model\Api\Client;
+use Paypercut\Payment\Model\Api\PaypercutApiException;
+use Paypercut\Payment\Model\Telemetry\Event;
+use Paypercut\Payment\Model\Telemetry\EventRecorder;
 use Paypercut\Payment\Model\Ui\ConfigProvider;
 use Psr\Log\LoggerInterface;
 
@@ -34,18 +37,26 @@ class CreateRefundAfterCreditMemo implements ObserverInterface
     private $logger;
 
     /**
+     * @var EventRecorder
+     */
+    private $recorder;
+
+    /**
      * @param Client $apiClient
      * @param ScopeConfigInterface $scopeConfig
      * @param LoggerInterface $logger
+     * @param EventRecorder $recorder
      */
     public function __construct(
         Client $apiClient,
         ScopeConfigInterface $scopeConfig,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        EventRecorder $recorder
     ) {
         $this->apiClient = $apiClient;
         $this->scopeConfig = $scopeConfig;
         $this->logger = $logger;
+        $this->recorder = $recorder;
     }
 
     /**
@@ -103,6 +114,10 @@ class CreateRefundAfterCreditMemo implements ObserverInterface
                 'order_id' => $order->getIncrementId(),
                 'creditmemo_id' => $creditmemo->getIncrementId()
             ]);
+            $this->recorder->record(
+                Event::failure('refund.rejected', 'missing_payment_intent', ['source' => 'credit_memo'])
+                    ->about(['order_ref' => (string) $order->getIncrementId()])
+            );
             return;
         }
 
@@ -110,6 +125,14 @@ class CreateRefundAfterCreditMemo implements ObserverInterface
             // Calculate refund amount in smallest currency unit (cents)
             $refundAmount = $creditmemo->getGrandTotal();
             $amountInCents = (int) round($refundAmount * 100);
+
+            if ($amountInCents <= 0) {
+                $this->recorder->record(
+                    Event::failure('refund.rejected', 'invalid_amount', ['source' => 'credit_memo'])
+                        ->about(['order_ref' => (string) $order->getIncrementId()])
+                );
+                return;
+            }
 
             // Prepare refund data
             $refundData = [
@@ -149,12 +172,36 @@ class CreateRefundAfterCreditMemo implements ObserverInterface
                     'creditmemo_id' => $creditmemo->getIncrementId(),
                     'refund_id' => $result['id']
                 ]);
+
+                // `has_reason` is a boolean on purpose: the reason text a
+                // merchant types is theirs and never travels.
+                $this->recorder->record(
+                    Event::of('refund.succeeded', [
+                        'source' => 'credit_memo',
+                        'is_partial' => abs($refundAmount - (float) $order->getGrandTotal()) > 0.01,
+                        'has_reason' => !empty($refundData['reason']),
+                        'has_refund_id' => true
+                    ])->about([
+                        'order_ref' => (string) $order->getIncrementId(),
+                        'payment_intent_id' => (string) $paymentIntentId
+                    ])
+                );
             } else {
                 $this->logger->error('Paypercut: Refund API returned unexpected response', [
                     'order_id' => $order->getIncrementId(),
                     'creditmemo_id' => $creditmemo->getIncrementId(),
                     'response' => $result
                 ]);
+
+                $this->recorder->record(
+                    Event::failure('refund.failed', 'no_refund_id', [
+                        'source' => 'credit_memo',
+                        'has_reason' => !empty($refundData['reason'])
+                    ])->about([
+                        'order_ref' => (string) $order->getIncrementId(),
+                        'payment_intent_id' => (string) $paymentIntentId
+                    ])
+                );
             }
         } catch (\Exception $e) {
             // Log error but don't fail the credit memo creation
@@ -163,6 +210,21 @@ class CreateRefundAfterCreditMemo implements ObserverInterface
                 'creditmemo_id' => $creditmemo->getIncrementId(),
                 'error' => $e->getMessage()
             ]);
+
+            $attrs = [
+                'source' => 'credit_memo',
+                'has_reason' => true
+            ];
+
+            $this->recorder->record(
+                ($e instanceof PaypercutApiException
+                    ? Event::apiFailure('refund.failed', $e, $attrs)
+                    : Event::failure('refund.failed', 'transport', $attrs, $e)
+                )->about([
+                    'order_ref' => (string) $order->getIncrementId(),
+                    'payment_intent_id' => (string) $paymentIntentId
+                ])
+            );
             
             // Add error comment to credit memo
             $creditmemo->addComment(
