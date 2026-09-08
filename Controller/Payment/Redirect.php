@@ -21,7 +21,7 @@ use Psr\Log\LoggerInterface;
  */
 class Redirect implements HttpGetActionInterface
 {
-    private const PLUGIN_VERSION = '1.1.3';
+    private const PLUGIN_VERSION = '1.2.0';
 
     /**
      * Which of the two hosted-checkout entry points this store used.
